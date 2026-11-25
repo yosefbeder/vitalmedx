@@ -178,7 +178,7 @@ route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
       if (l.video_file) await bot.forwardFile(me.tg_id, l.video_file, 'video', `#${l.id} ${l.name} · فيديو`);
       if (l.q_file) await bot.forwardFile(me.tg_id, l.q_file, 'doc', `#${l.id} ${l.name} · ملف الأسئلة`);
       break; }
-    case 'cancel': if (u.role !== 'admin' || l.video_at || l.q_at) fail(400, 'مينفعش تتلغي'); run('DELETE FROM tickets WHERE lecture_id=? AND reply_at IS NULL', l.id); run('DELETE FROM price_log WHERE lecture_id=?', l.id); run('DELETE FROM lectures WHERE id=?', l.id); break;
+    case 'cancel': if (u.role !== 'admin') fail(403, 'الأدمن بس'); if (l.settlement_id) fail(400, 'المحاضرة دي دخلت في حساب اتقفل، مينفعش تتمسح'); run('UPDATE tickets SET lecture_id=NULL WHERE lecture_id=?', l.id); run('DELETE FROM price_log WHERE lecture_id=?', l.id); run('DELETE FROM lectures WHERE id=?', l.id); break;
     default: fail(400, 'إجراء غير معروف');
   }
   audit(u.id, 'lecture_' + body.action, { id: l.id }); return { ok: true };
@@ -216,6 +216,7 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
     case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); break;
     case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); break;
     case 'deliver': if (!csOk || !t.returned_at) fail(400, 'الرد لسه مارجعش'); run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, u.id, n, t.id); break;
+    case 'delete': need(u, 'admin'); run('DELETE FROM tickets WHERE id=?', t.id); break;
     case 'close': if (t.kind !== 'problem' || !(coordOk || csOk)) fail(400, 'مش مسموح'); run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', str(body.resolution), n, t.id); break;
     default: fail(400, 'إجراء غير معروف');
   }

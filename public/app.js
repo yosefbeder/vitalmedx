@@ -200,7 +200,7 @@ async function openLecture(id) {
   modal(`<b>#${l.id}</b> ${pill(...LS[l.state])}<div>${esc(l.name)}</div>`, `<p class="mut">${l.batch_code ? `<span dir="ltr">${esc(l.batch_code)}</span> · ${esc(l.university)} ${esc(l.batch_year)} · ` : ''}${esc(l.doctor)} · ${TY()[l.type]} · السعر ${money(l.price)}${l.coordinator ? ' · ' + esc(l.coordinator) : ''}</p>
   <div class="two"><div class="panel"><h3>الفيديو</h3>${fcell(l, 'v')}</div><div class="panel"><h3>ملف الأسئلة</h3>${fcell(l, 'q')}</div></div>
   <h3>سجل العمليات</h3><ul class="log">${log.map(([t, x]) => `<li><span class="mut">${fmt(t)}</span><br>${esc(x)}</li>`).join('')}</ul>
-  ${staff ? `<div class="row" style="margin:14px 0">${(l.video_at || l.q_at) ? '<button class="btn g sm" id="fw">ابعتلي الملفات على تليجرام</button>' : ''}${!l.settlement_id ? '<button class="btn g sm" id="pr">تعديل السعر</button>' : ''}${ME.role === 'admin' && !l.video_at && !l.q_at ? '<button class="btn g sm r" id="cx">إلغاء المحاضرة</button>' : ''}</div>
+  ${staff ? `<div class="row" style="margin:14px 0">${(l.video_at || l.q_at) ? '<button class="btn g sm" id="fw">ابعتلي الملفات على تليجرام</button>' : ''}${!l.settlement_id ? '<button class="btn g sm" id="pr">تعديل السعر</button>' : ''}${ME.role === 'admin' && !l.settlement_id ? '<button class="btn sm r" id="cx">مسح المحاضرة</button>' : ''}</div>
   <form id="af" class="panel"><h3>الاعتماد</h3>${l.video_at && !l.video_ok_at ? '<label class="chk"><input type="checkbox" name="video"> اعتماد الفيديو</label>' : ''}${l.q_at && !l.q_ok_at ? '<label class="chk"><input type="checkbox" name="q"> اعتماد ملف الأسئلة</label>' : ''}${!both ? '<p class="mut">المحاضرة مش هتتقفل غير لما الفيديو والأسئلة يوصلوا ويتعتمدوا.</p>' : ''}${(l.video_at && !l.video_ok_at) || (l.q_at && !l.q_ok_at) ? '<button class="btn sm">اعتماد</button>' : approved ? '<p class="ok">الاتنين معتمدين ✓</p>' : ''}</form>
   <form id="rf" class="panel"><h3>التقييم</h3><p class="mut">الالتزام بالموعد (35) بيتحسب لوحده.${approved ? '' : ' التقييم بيتفتح بعد الاعتماد.'}</p><div class="four">${ni('r_video', 'جودة الفيديو', 40)}${ni('r_q', 'جودة الأسئلة', 10)}${ni('r_instr', 'التعليمات', 10)}${ni('r_comm', 'التواصل', 5)}</div>${approved ? '<button class="btn sm">حفظ التقييم</button>' : ''}</form>
   ${approved ? `<div class="panel"><h3>الرفع</h3>${l.uploaded_at ? `<p class="ok">اترفعت ${fmt(l.uploaded_at)} ✓</p>` : `<p class="mut">ارفعها على Nerdio وقناة الدفعة وبعدين دوس هنا.</p><button class="btn a" id="up">تم الرفع</button>`}</div>` : ''}` : ''}`);
@@ -210,7 +210,7 @@ async function openLecture(id) {
   $('#rf').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act({ action: 'rate', r_video: f.get('r_video'), r_q: f.get('r_q'), r_instr: f.get('r_instr'), r_comm: f.get('r_comm') }, 'التقييم اتحفظ'); };
   if ($('#up')) $('#up').onclick = () => act({ action: 'uploaded' }, 'اتسجل الرفع');
   if ($('#fw')) $('#fw').onclick = () => act({ action: 'forward' }, 'الملفات اتبعتتلك على تليجرام');
-  if ($('#cx')) $('#cx').onclick = async () => { await api('PATCH', '/api/lectures/' + id, { action: 'cancel' }); dlg.close(); toast('اتلغت'); render(); };
+  if ($('#cx')) $('#cx').onclick = () => { modal(`<b>مسح المحاضرة #${l.id}</b>`, `<p>${esc(l.name)}</p><p class="red">المحاضرة هتتمسح نهائي بكل بياناتها وتقييمها، ومش هتتحسب في أي حساب. متأكد؟</p><div class="row"><button class="btn r" id="cxy">أيوه، امسحها</button><button class="btn g" data-close>لا</button></div>`); $('#cxy').onclick = async () => { await api('PATCH', '/api/lectures/' + id, { action: 'cancel' }); dlg.close(); toast('اتمسحت'); render(); }; };
   if ($('#pr')) $('#pr').onclick = () => modal(`<b>تعديل سعر #${l.id}</b>`, `<form id="pf"><label>السعر الجديد<input type="number" step="0.01" min="0" name="price" value="${l.price}" required></label><p class="mut">التعديل بيتسجل باسمك والدكتور بيتبلّغ على البوت.</p><button class="btn">حفظ</button></form>`) || ($('#pf').onsubmit = async e => { e.preventDefault(); await api('PATCH', '/api/lectures/' + id, { action: 'price', price: new FormData(e.target).get('price') }); toast('السعر اتعدّل'); openLecture(id); render(); });
 }
 
@@ -245,12 +245,14 @@ async function openTicket(id) {
   if (t.stage === 'return' && coord) act = `<div class="panel"><h3>رجّع الرد لخدمة العملاء</h3><button class="btn a" id="tret">تم، الرد رجع لخدمة العملاء</button></div>`;
   if (t.stage === 'deliver' && cs) act = `<div class="panel"><h3>ابعت الرد للطالب</h3><button class="btn a" id="tdel">تم، الرد اتبعت للطالب</button></div>`;
   if (t.stage === 'problem' && (coord || cs)) act = `<form id="tc" class="panel"><h3>قفل المشكلة</h3><label>اتحلت إزاي<textarea name="resolution" required></textarea></label><button class="btn a">قفل</button></form>`;
+  if (ME.role === 'admin') act += `<div class="row" style="margin-top:12px"><button class="btn sm r" id="tdx">مسح التذكرة</button></div>`;
   modal(`<b>${t.kind === 'question' ? 'سؤال' : 'مشكلة'} #${t.id}</b> ${pill(...STG[t.stage])}`, `<p class="mut"><span dir="ltr">${esc(t.batch_code)}</span>${t.lecture ? ' · ' + esc(t.lecture) : ''}${t.student ? ' · الطالب: ' + esc(t.student) : ''}</p><div class="panel">${esc(t.body)}</div>${t.reply ? `<div class="panel"><h3>رد الدكتور</h3>${esc(t.reply)}</div>` : ''}${t.resolution ? `<div class="panel"><h3>الحل</h3>${esc(t.resolution)}</div>` : ''}<h3>المراحل</h3><ul class="log">${log.map(([a, x]) => `<li><span class="mut">${fmt(a)}</span><br>${esc(x)}</li>`).join('')}</ul>${act}`);
   const go = async (b, m) => { await api('PATCH', '/api/tickets/' + id, b); dlg.close(); toast(m); render(); };
   if ($('#ta')) $('#ta').onsubmit = e => { e.preventDefault(); go({ action: 'send_doctor', doctor_id: new FormData(e.target).get('doctor_id') }, 'اتبعت للدكتور'); };
   if ($('#tr')) $('#tr').onsubmit = e => { e.preventDefault(); go({ action: 'set_reply', reply: new FormData(e.target).get('reply') }, 'الرد اتسجل'); };
   if ($('#tret')) $('#tret').onclick = () => go({ action: 'return' }, 'رجع لخدمة العملاء');
   if ($('#tdel')) $('#tdel').onclick = () => go({ action: 'deliver' }, 'التذكرة اتقفلت');
+  if ($('#tdx')) $('#tdx').onclick = () => { if ($('#tdx').dataset.sure) return go({ action: 'delete' }, 'اتمسحت'); $('#tdx').dataset.sure = 1; $('#tdx').textContent = 'متأكد؟ دوس تاني للمسح'; };
   if ($('#tc')) $('#tc').onsubmit = e => { e.preventDefault(); go({ action: 'close', resolution: new FormData(e.target).get('resolution') }, 'المشكلة اتقفلت'); };
 }
 
