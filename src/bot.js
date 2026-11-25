@@ -95,7 +95,7 @@ async function handleUpdate(u) {
   }
   if (!user) return send(chat, `أهلاً بيك في بوت ${setting('brand')}.\nابعت كود الربط اللي وصلك من الإدارة (بيبدأ بـ VM-).`);
   if (text === '/start') return send(chat, `أهلاً ${user.name} 👋\n/tasks لعرض المحاضرات المفتوحة`);
-  if (user.role !== 'doctor') return send(chat, 'الحساب ده مربوط للإشعارات بس.');
+  if (user.role !== 'doctor') return send(chat, `أهلاً ${user.name}، حسابك مربوط بالبوت ✓\nالبوت بيستقبل الفيديوهات وملفات الأسئلة من حسابات الدكاترة بس.\nإرسال المحاضرات للدكاترة بيتم من لوحة التحكم، والبوت هيبعتلك هنا أي ملفات تطلبها من صفحة المحاضرة (زرار "ابعتلي الملفات على تليجرام").`);
   if (text === '/tasks') {
     const ls = all('SELECT * FROM lectures WHERE doctor_id=? AND (video_at IS NULL OR q_at IS NULL) ORDER BY sent_at', user.id);
     if (!ls.length) return send(chat, 'مفيش محاضرات مفتوحة دلوقتي ✓');
