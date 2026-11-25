@@ -38,6 +38,9 @@ const NAV = {
   doctor: [['home', 'مهامي'], ['penalties', 'القرارات'], ['account', 'حسابي']],
 };
 const TY = () => ME.types;
+const PRI = { 0: ['غير مهم', 'pd'], 1: ['عادي', 'rv'], 2: ['مهم', 'warn'], 3: ['مهم جداً', 'bad'] };
+const ORD = ['', 'الأول', 'التاني', 'التالت', 'الرابع', 'الخامس', 'السادس', 'السابع', 'التامن', 'التاسع', 'العاشر'];
+async function rankCard() { try { const r = await api('GET', '/api/myrank'); if (!r.rank) return ''; return `<div class="panel" style="display:flex;gap:14px;align-items:center"><b style="font-size:34px;line-height:1">${r.rank}</b><div><b>إنت ${r.rank <= 10 ? 'في المركز ' + ORD[r.rank] : 'في المركز رقم ' + r.rank}</b><div class="mut">من ${r.of} في نفس دورك · ترتيب شهر ${esc(r.month)}</div></div></div>`; } catch { return ''; } }
 const LS = { late: ['متأخرة', 'bad'], progress: ['قيد التنفيذ', 'pd'], review: ['تحت المراجعة', 'rv'], upload: ['مستنية رفع', 'warn'], done: ['مكتملة', 'ok'] };
 const FS = { pending: ['قيد التنفيذ', 'pd'], overdue: ['متأخر – لم يُسلَّم', 'bad'], review: ['تحت المراجعة', 'rv'], approved: ['معتمد', 'ok'] };
 function fcell(l, k) {
@@ -89,10 +92,11 @@ const V = {};
 
 V.home = async () => {
   const h = await api('GET', '/api/home');
-  if (ME.role === 'doctor') return doctorHome(h);
+  if (ME.role === 'doctor') return await doctorHome(h);
   const s = h.summary, late = s.lateNow;
   let html = `<h2>${late ? `${late} محاضرة متأخرة دلوقتي محتاجة متابعة` : 'كل المحاضرات ماشية في مواعيدها'}</h2><p class="note">أرقام النهارده · ${esc(ME.today)}</p>
   <div class="kpis">${kpi(s.sent, 'اتبعتت النهارده')}${kpi(s.videos, 'فيديوهات اتسلمت')}${kpi(s.qfiles, 'ملفات أسئلة اتسلمت')}${kpi(s.uploaded, 'اترفعت')}${kpi(late, 'متأخرة الآن', late)}${kpi(s.toUpload, 'مستنية رفع', s.toUpload)}${kpi(s.questions, 'أسئلة جديدة')}${kpi(s.ticketsLate, 'تذاكر عدّت المهلة', s.ticketsLate)}${kpi(s.problemsOpen, 'مشاكل مفتوحة', s.problemsOpen)}</div>`;
+  if (ME.role !== 'admin') html += await rankCard();
   if (h.mine) html += myScore(h.mine);
   html += `<div class="grid2"><section class="panel"><h3>تنبيهات تحتاج متابعة</h3>${alertRows(h.alerts.slice(0, 15))}</section>`;
   if (h.days) { const mx = Math.max(1, ...h.days.map(d => d.sent));
@@ -106,15 +110,15 @@ function myScore(m) {
   const parts = ME.role === 'coordinator' ? [['الاشتراكات', s.subs, 30], ['مهل الأسئلة والرفع', s.deadlines, 30], ['المشاكل والتنظيم', s.problems, 20], ['ليستة المهام', s.checklist, 20]] : [['الاشتراكات', s.subs, 40], ['التقصير والتأخير', s.delays, 30], ['المشاكل المفتوحة', s.problems, 20], ['التقرير اليومي', s.reports, 10]];
   return `<div class="panel"><div class="row sp"><h3>تقييمك آخر 30 يوم</h3><b style="font-size:28px">${s.total}<span class="mut"> / 100</span></b></div>${parts.map(([l, v, m]) => meter(l, v, m, `${Math.round(v)}/${m}`)).join('')}</div>`;
 }
-function doctorHome(h) {
-  const s = h.stats, sc = s.score;
+async function doctorHome(h) {
+  const s = h.stats, sc = s.score, rc = await rankCard();
   $('#main').innerHTML = `<h2>أهلاً ${esc(ME.name)}</h2><p class="note">المحاضرات بتوصلك وبتسلّمها على البوت. هنا تقدر تتابع مهامك وتقييمك.</p>
-  <div class="kpis">${kpi(sc.total, 'تقييمك من 100', sc.total < 70)}${kpi(s.assigned, 'كل المحاضرات')}${kpi(s.delivered, 'سلّمتها')}${kpi(s.lateNow, 'متأخرة الآن', s.lateNow)}${kpi(pct(s.compliance), 'التزامك بالمواعيد')}${kpi(`${s.sentToday}/${s.capacity}`, 'النهارده من طاقتك')}</div>
+  ${rc}<div class="kpis">${kpi(sc.total, 'تقييمك من 100', sc.total < 70)}${kpi(s.assigned, 'كل المحاضرات')}${kpi(s.delivered, 'سلّمتها')}${kpi(s.lateNow, 'متأخرة الآن', s.lateNow)}${kpi(pct(s.compliance), 'التزامك بالمواعيد')}${kpi(`${s.sentToday}/${s.capacity}`, 'النهارده من طاقتك')}</div>
   <div class="grid2"><section class="panel"><h3>المحاضرات المفتوحة</h3><div id="dl"></div></section><section class="panel"><h3>تفاصيل التقييم</h3>${meter('الالتزام بالموعد', sc.dl, 35, `${Math.round(sc.dl)}/35`)}${meter('جودة الفيديو', sc.video ?? 0, 40, sc.video == null ? '—' : `${Math.round(sc.video)}/40`)}${meter('جودة الأسئلة', sc.q ?? 0, 10, sc.q == null ? '—' : `${Math.round(sc.q)}/10`)}${meter('التعليمات', sc.instr ?? 0, 10, sc.instr == null ? '—' : `${Math.round(sc.instr)}/10`)}${meter('التواصل', sc.comm ?? 0, 5, sc.comm == null ? '—' : `${Math.round(sc.comm)}/5`)}<p class="mut">${ME.linked ? 'حسابك مربوط بالبوت ✓' : 'حسابك لسه مش مربوط بالبوت. ادخل "حسابي" وخد الكود.'}</p></section></div>
   <section class="panel"><h3>آخر المحاضرات</h3><div id="dall"></div></section>`;
   api('GET', '/api/lectures?limit=60').then(ls => {
-    const open = ls.filter(l => !(l.video_at && l.q_at));
-    $('#dl').innerHTML = open.length ? `<table class="stack"><thead><tr><th>المحاضرة</th><th>الفيديو</th><th>الأسئلة</th></tr></thead><tbody>${open.map(l => `<tr><td>#${l.id} ${esc(l.name)}<div class="mut">${TY()[l.type]} · ${money(l.price)}</div></td><td>${fcell(l, 'v')}</td><td>${fcell(l, 'q')}</td></tr>`).join('')}</tbody></table>` : empty('مفيش محاضرات مفتوحة ✓');
+    const open = ls.filter(l => !(l.video_at && l.q_at)).sort((a, b) => (a.queue_pos ?? 1e9) - (b.queue_pos ?? 1e9) || a.sent_at - b.sent_at);
+    $('#dl').innerHTML = open.length ? `<table class="stack"><thead><tr><th>المحاضرة</th><th>الفيديو</th><th>الأسئلة</th></tr></thead><tbody>${open.map((l, i) => `<tr><td><b>${i + 1})</b> #${l.id} ${esc(l.name)}<div class="mut">${TY()[l.type]} · ${money(l.price)}</div></td><td>${fcell(l, 'v')}</td><td>${fcell(l, 'q')}</td></tr>`).join('')}</tbody></table>` : empty('مفيش محاضرات مفتوحة ✓');
     $('#dall').innerHTML = `<table class="stack"><thead><tr><th>المحاضرة</th><th>النوع</th><th class="n">السعر</th><th>الحالة</th><th>اتبعتت</th></tr></thead><tbody>${ls.map(l => `<tr><td>#${l.id} ${esc(l.name)}</td><td>${TY()[l.type]}</td><td class="n">${money(l.price)}</td><td>${pill(...LS[l.state])}</td><td>${fmt(l.sent_at)}</td></tr>`).join('')}</tbody></table>`;
   });
 }
@@ -155,28 +159,28 @@ function bindExam() {
 }
 
 /* ----- lectures ----- */
-const LF = { state: '', batch: '', doctor: '', type: '', q: '' };
+const LF = { state: '', batch: '', doctor: '', type: '', q: '', priority: '', sort: '' };
 V.lectures = async () => {
   const [bs, ds] = await Promise.all([api('GET', '/api/batches'), api('GET', '/api/doctors')]); cache.batches = bs; cache.doctors = ds;
   const canSend = ['admin', 'coordinator'].includes(ME.role);
   $('#main').innerHTML = `<div class="row sp"><h2>المحاضرات</h2>${canSend ? '<button class="btn a" id="newlec">+ إرسال محاضرة</button>' : ''}</div>
   <p class="note">كل محاضرة ليها تايمر ${esc(ME.settings.deadline_hours)} ساعة للفيديو وتايمر منفصل لملف الأسئلة، والرفع خلال ${esc(ME.settings.upload_minutes)} دقيقة من الاعتماد.</p>
-  <div class="filters"><input id="fq" placeholder="بحث بالاسم أو الرقم" value="${esc(LF.q)}"><select id="fs">${opts(Object.entries(LS).map(([k, v]) => [k, v[0]]), LF.state, 'كل الحالات')}</select><select id="fb">${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni]), LF.batch, 'كل الدفعات')}</select><select id="fd">${opts(ds.map(d => [d.id, d.name]), LF.doctor, 'كل الدكاترة')}</select><select id="ft">${opts(Object.entries(TY()), LF.type, 'كل الأنواع')}</select></div><div id="lt"></div>`;
+  <div class="filters"><input id="fq" placeholder="بحث بالاسم أو الرقم" value="${esc(LF.q)}"><select id="fs">${opts(Object.entries(LS).map(([k, v]) => [k, v[0]]), LF.state, 'كل الحالات')}</select><select id="fb">${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni]), LF.batch, 'كل الدفعات')}</select><select id="fd">${opts(ds.map(d => [d.id, d.name]), LF.doctor, 'كل الدكاترة')}</select><select id="ft">${opts(Object.entries(TY()), LF.type, 'كل الأنواع')}</select><select id="fp">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), LF.priority, 'كل الأولويات')}</select><select id="fo">${opts([['priority', 'الأهم أولاً']], LF.sort, 'الأحدث أولاً')}</select></div><div id="lt"></div>`;
   const load = async () => { const q = new URLSearchParams(Object.entries(LF).filter(([, v]) => v)); const ls = await api('GET', '/api/lectures?' + q); $('#lt').innerHTML = `<p class="mut">${ls.length} محاضرة</p><div class="panel" style="padding:6px 10px">${lecTable(ls)}</div>`; };
   const bind = (id, k, ev = 'change') => ($(id)['on' + ev] = () => { LF[k] = $(id).value; load(); });
-  bind('#fs', 'state'); bind('#fb', 'batch'); bind('#fd', 'doctor'); bind('#ft', 'type');
+  bind('#fs', 'state'); bind('#fb', 'batch'); bind('#fd', 'doctor'); bind('#ft', 'type'); bind('#fp', 'priority'); bind('#fo', 'sort');
   let tm; $('#fq').oninput = () => { clearTimeout(tm); tm = setTimeout(() => { LF.q = $('#fq').value; load(); }, 300); };
   if (canSend) $('#newlec').onclick = () => sendLectureForm();
   load();
 };
 function lecTable(ls) {
   if (!ls.length) return empty('مفيش محاضرات');
-  return `<table class="stack"><thead><tr><th>#</th><th>المحاضرة</th><th>الدكتور</th><th>النوع</th><th>الفيديو</th><th>الأسئلة</th><th>الحالة</th><th></th></tr></thead><tbody>${ls.map(l => `<tr><td><b>${l.id}</b><div class="mut">${fmt(l.sent_at)}</div></td><td>${esc(l.name)}<div class="mut"><span dir="ltr">${esc(l.batch_code || '')}</span> · ${esc(l.coordinator || '')}</div></td><td>${esc(l.doctor)}</td><td>${TY()[l.type]}<div class="mut">${money(l.price)}</div></td><td>${fcell(l, 'v')}</td><td>${fcell(l, 'q')}</td><td>${pill(...LS[l.state])}${l.upload_late ? '<div class="mut red">الرفع اتأخر</div>' : ''}</td><td><button class="btn g sm" data-lec="${l.id}">فتح</button></td></tr>`).join('')}</tbody></table>`;
+  return `<table class="stack"><thead><tr><th>#</th><th>المحاضرة</th><th>الدكتور</th><th>النوع</th><th>الفيديو</th><th>الأسئلة</th><th>الحالة</th><th></th></tr></thead><tbody>${ls.map(l => `<tr><td><b>${l.id}</b><div class="mut">${fmt(l.sent_at)}</div></td><td>${esc(l.name)}<div class="mut"><span dir="ltr">${esc(l.batch_code || '')}</span> · ${esc(l.coordinator || '')}</div></td><td>${esc(l.doctor)}</td><td>${TY()[l.type]}<div class="mut">${money(l.price)}</div></td><td>${fcell(l, 'v')}</td><td>${fcell(l, 'q')}</td><td>${pill(...LS[l.state])}${l.priority != null && l.priority !== 1 ? `<div style="margin-top:4px">${pill(...PRI[l.priority])}</div>` : ''}${l.excused ? '<div class="mut amber">مستثناة من التأخير</div>' : ''}${l.upload_late ? '<div class="mut red">الرفع اتأخر</div>' : ''}</td><td><button class="btn g sm" data-lec="${l.id}">فتح</button></td></tr>`).join('')}</tbody></table>`;
 }
 function sendLectureForm() {
   const bs = cache.batches, ds = cache.doctors;
   modal('<b>إرسال محاضرة جديدة</b>', `<form id="sf"><div class="two"><label>الدفعة<select name="batch_id" required>${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni + ' ' + b.year]), '', 'اختار الدفعة')}</select></label><label>الدكتور<select name="doctor_id" id="sd" required>${opts(ds.map(d => [d.id, d.name + (d.linked ? '' : ' (مش مربوط بالبوت)')]), '', 'اختار الدكتور')}</select></label></div>
-  <p class="mut" id="cap"></p><div class="two"><label>النوع<select name="type" id="st">${opts(Object.entries(TY()), 'theory')}</select></label><label>السعر<input name="price" id="sp" type="number" step="0.01" min="0" required></label></div>
+  <p class="mut" id="cap"></p><label>الأولوية (مش بتظهر للدكتور)<select name="priority">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), '1')}</select></label><div class="two"><label>النوع<select name="type" id="st">${opts(Object.entries(TY()), 'theory')}</select></label><label>السعر<input name="price" id="sp" type="number" step="0.01" min="0" required></label></div>
   <label>اسم المحاضرة<input name="name" required dir="auto" placeholder="Anatomy – Lec 12: Thorax"></label>
   <div class="two"><label>ملف المحاضرة PDF<input type="file" name="lec" accept="application/pdf,.pdf"></label><label>مرجع الأسئلة (اختياري)<input type="file" name="qsrc"></label></div>
   <label class="chk"><input type="checkbox" name="no_q" value="1"> إعفاء ملف الأسئلة (المحاضرة دي مالهاش ملف أسئلة)</label><p class="mut">الدكتور هيشوف اسم المحاضرة ونوعها وسعرها والملفات بس، من غير اسم الجامعة أو الكود.</p><button class="btn a wide">إرسال للدكتور عبر البوت</button></form>`);
@@ -194,19 +198,23 @@ function sendLectureForm() {
   };
 }
 async function openLecture(id) {
-  const l = await api('GET', '/api/lectures/' + id), staff = ['admin', 'coordinator'].includes(ME.role);
+  const l = await api('GET', '/api/lectures/' + id), staff = ['admin', 'coordinator'].includes(ME.role), boss = ['admin', 'supervisor'].includes(ME.role), canPri = staff || ME.role === 'supervisor';
   const both = l.video_at && l.q_at, approved = l.video_ok_at && l.q_ok_at;
   const log = [[l.sent_at, 'اتبعتت للدكتور عبر البوت'], l.video_at && [l.video_at, 'الفيديو اتسلم' + (l.v_late ? ' (متأخر)' : '')], l.video_ok_at && [l.video_ok_at, 'الفيديو اتعتمد'], l.q_at && [l.q_at, 'ملف الأسئلة اتسلم' + (l.q_late ? ' (متأخر)' : '')], l.q_ok_at && [l.q_ok_at, 'ملف الأسئلة اتعتمد'], l.uploaded_at && [l.uploaded_at, 'اترفعت على Nerdio والقناة' + (l.upload_late ? ' (متأخر)' : '')], ...(l.price_log || []).map(p => [p.at, `السعر اتغير من ${money(p.old)} لـ ${money(p.new)} (${p.by_name})`])].filter(Boolean).sort((a, b) => a[0] - b[0]);
   const ni = (n, lab, m) => `<label>${lab} (من ${m})<input type="number" name="${n}" min="0" max="${m}" value="${l[n] ?? ''}" ${approved ? '' : 'disabled'}></label>`;
   modal(`<b>#${l.id}</b> ${pill(...LS[l.state])}<div>${esc(l.name)}</div>`, `<p class="mut">${l.batch_code ? `<span dir="ltr">${esc(l.batch_code)}</span> · ${esc(l.university)} ${esc(l.batch_year)} · ` : ''}${esc(l.doctor)} · ${TY()[l.type]} · السعر ${money(l.price)}${l.coordinator ? ' · ' + esc(l.coordinator) : ''}</p>
   <div class="two"><div class="panel"><h3>الفيديو</h3>${fcell(l, 'v')}</div><div class="panel"><h3>ملف الأسئلة</h3>${fcell(l, 'q')}</div></div>
+  ${canPri ? `<div class="panel"><div class="two"><label>الأولوية (مش بتظهر للدكتور)<select id="lpri">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), l.priority)}</select></label>${boss ? `<div>${l.excused ? `<p class="amber"><b>مستثناة من التأخير</b>${l.excuse_note ? '<br>' + esc(l.excuse_note) : ''}</p><button class="btn g sm" id="unex">إلغاء الاستثناء</button>` : `<p class="mut">لو قدّمت عليها محاضرات تانية فوق طاقة الدكتور، استثنيها من التأخير.</p><button class="btn g sm" id="exl">استثناء من التأخير</button>`}</div>` : ''}</div></div>` : ''}
   <h3>سجل العمليات</h3><ul class="log">${log.map(([t, x]) => `<li><span class="mut">${fmt(t)}</span><br>${esc(x)}</li>`).join('')}</ul>
   ${staff ? `<div class="row" style="margin:14px 0">${(l.video_at || l.q_at) ? '<button class="btn g sm" id="fw">ابعتلي الملفات على تليجرام</button>' : ''}${!l.settlement_id ? '<button class="btn g sm" id="pr">تعديل السعر</button>' : ''}${!l.q_at && !l.no_q ? '<button class="btn g sm" id="exq">إعفاء ملف الأسئلة</button>' : ''}${l.no_q && !l.settlement_id ? '<button class="btn g sm" id="unexq">إلغاء إعفاء ملف الأسئلة</button>' : ''}${ME.role === 'admin' && !l.settlement_id ? '<button class="btn sm r" id="cx">مسح المحاضرة</button>' : ''}</div>
   <form id="af" class="panel"><h3>الاعتماد</h3>${l.video_at && !l.video_ok_at ? '<label class="chk"><input type="checkbox" name="video"> اعتماد الفيديو</label>' : ''}${l.q_at && !l.q_ok_at ? '<label class="chk"><input type="checkbox" name="q"> اعتماد ملف الأسئلة</label>' : ''}${!both ? '<p class="mut">المحاضرة مش هتتقفل غير لما الفيديو والأسئلة يوصلوا ويتعتمدوا.</p>' : ''}${(l.video_at && !l.video_ok_at) || (l.q_at && !l.q_ok_at) ? '<button class="btn sm">اعتماد</button>' : approved ? '<p class="ok">الاتنين معتمدين ✓</p>' : ''}</form>
   <form id="rf" class="panel"><h3>التقييم</h3><p class="mut">الالتزام بالموعد (35) بيتحسب لوحده.${approved ? '' : ' التقييم بيتفتح بعد الاعتماد.'}</p><div class="four">${ni('r_video', 'جودة الفيديو', 40)}${ni('r_q', 'جودة الأسئلة', 10)}${ni('r_instr', 'التعليمات', 10)}${ni('r_comm', 'التواصل', 5)}</div>${approved ? '<button class="btn sm">حفظ التقييم</button>' : ''}</form>
   ${approved ? `<div class="panel"><h3>الرفع</h3>${l.uploaded_at ? `<p class="ok">اترفعت ${fmt(l.uploaded_at)} ✓</p>` : `<p class="mut">ارفعها على Nerdio وقناة الدفعة وبعدين دوس هنا.</p><button class="btn a" id="up">تم الرفع</button>`}</div>` : ''}` : ''}`);
-  if (!staff) return;
   const act = async (b, msg) => { await api('PATCH', '/api/lectures/' + id, b); toast(msg); openLecture(id); render(); };
+  if ($('#lpri')) $('#lpri').onchange = () => act({ action: 'priority', priority: $('#lpri').value }, 'الأولوية اتغيرت');
+  if ($('#unex')) $('#unex').onclick = () => act({ action: 'unexcuse' }, 'الاستثناء اتلغى');
+  if ($('#exl')) $('#exl').onclick = () => { modal(`<b>استثناء #${l.id} من التأخير</b>`, '<form id="exf"><label>السبب<input name="note" placeholder="مثلاً: اتقدم عليها محاضرات مستعجلة"></label><button class="btn">استثناء</button></form>'); $('#exf').onsubmit = e => { e.preventDefault(); act({ action: 'excuse', note: new FormData(e.target).get('note') }, 'اتستثنت من التأخير'); }; };
+  if (!staff) return;
   $('#af').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act({ action: 'approve', video: !!f.get('video'), q: !!f.get('q') }, 'اتعتمد'); };
   $('#rf').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act({ action: 'rate', r_video: f.get('r_video'), r_q: f.get('r_q'), r_instr: f.get('r_instr'), r_comm: f.get('r_comm') }, 'التقييم اتحفظ'); };
   if ($('#up')) $('#up').onclick = () => act({ action: 'uploaded' }, 'اتسجل الرفع');
@@ -224,7 +232,8 @@ V.tickets = async () => {
   const [ts, bs] = await Promise.all([api('GET', '/api/tickets' + (TF === 'open' ? '?open=1' : '')), api('GET', '/api/batches')]); cache.batches = bs; cache.tickets = ts;
   const mineFirst = ME.role === 'cs' ? ['deliver'] : ME.role === 'coordinator' ? ['new', 'return', 'problem'] : [];
   ts.sort((a, b) => (mineFirst.includes(b.stage) - mineFirst.includes(a.stage)));
-  $('#main').innerHTML = `<div class="row sp"><h2>الأسئلة والمشاكل</h2>${['admin', 'cs', 'coordinator'].includes(ME.role) ? '<button class="btn a" id="nt">+ تذكرة جديدة</button>' : ''}</div>
+  const rcs = ME.role === 'cs' ? await rankCard() : '';
+  $('#main').innerHTML = `${rcs}<div class="row sp"><h2>الأسئلة والمشاكل</h2>${['admin', 'cs', 'coordinator'].includes(ME.role) ? '<button class="btn a" id="nt">+ تذكرة جديدة</button>' : ''}</div>
   <p class="note">مسؤول الدفعة معاه ${esc(ME.settings.coord_reply_minutes)} دقيقة يرجّع رد الدكتور، وخدمة العملاء معاها ${esc(ME.settings.cs_reply_minutes)} دقيقة توصّله للطالب.</p>
   <div class="tabs"><button data-tf="open" class="${TF === 'open' ? 'on' : ''}">المفتوحة</button><button data-tf="all" class="${TF === 'all' ? 'on' : ''}">الكل</button></div>
   <div class="panel" style="padding:6px 10px">${ts.length ? `<table class="stack"><thead><tr><th>#</th><th>النوع</th><th>الدفعة</th><th>النص</th><th>المرحلة</th><th>الوقت</th><th></th></tr></thead><tbody>${ts.map(t => `<tr><td><b>${t.id}</b></td><td>${t.kind === 'question' ? 'سؤال' : 'مشكلة'}</td><td dir="ltr">${esc(t.batch_code)}</td><td>${esc(t.body.slice(0, 90))}${t.student ? `<div class="mut">${esc(t.student)}</div>` : ''}</td><td>${pill(...STG[t.stage])}${t.coord_late ? '<div class="mut red">المسؤول اتأخر</div>' : ''}${t.cs_late ? '<div class="mut red">خدمة العملاء اتأخرت</div>' : ''}</td><td>${fmt(t.created_at)}</td><td><button class="btn g sm" data-tk="${t.id}">فتح</button></td></tr>`).join('')}</tbody></table>` : empty('مفيش تذاكر')}</div>`;
@@ -306,9 +315,19 @@ async function openDoctor(id) {
   ${meter('الالتزام بالموعد', sc.dl, 35, `${Math.round(sc.dl)}/35`)}${meter('جودة الفيديو', sc.video ?? 0, 40, sc.video == null ? '—' : `${Math.round(sc.video)}/40`)}${meter('جودة الأسئلة', sc.q ?? 0, 10, sc.q == null ? '—' : `${Math.round(sc.q)}/10`)}${meter('التعليمات', sc.instr ?? 0, 10, sc.instr == null ? '—' : `${Math.round(sc.instr)}/10`)}${meter('التواصل', sc.comm ?? 0, 5, sc.comm == null ? '—' : `${Math.round(sc.comm)}/5`)}
   ${d.price_theory != null ? `<p>الأسعار: نظري ${money(d.price_theory)} · عملي ${money(d.price_practical)} · مراجعة ${money(d.price_revision)}</p>` : ''}
   ${admin ? `<form id="cf" class="panel"><h3>التعاقد</h3><div class="four"><label>نظري<input type="number" step="0.01" name="price_theory" value="${d.price_theory}"></label><label>عملي<input type="number" step="0.01" name="price_practical" value="${d.price_practical}"></label><label>مراجعة<input type="number" step="0.01" name="price_revision" value="${d.price_revision}"></label><label>الطاقة اليومية<input type="number" name="capacity" value="${d.capacity}"></label></div><label>تعديل التقييم من الإدارة (+/−)<input type="number" name="adj" value="${d.adj || 0}" min="-30" max="30"></label>${!d.linked ? `<p>كود الربط: <code>${esc(d.link_code)}</code></p>` : ''}<button class="btn sm">حفظ</button></form>` : ''}
+  ${['admin', 'supervisor'].includes(ME.role) ? '<div class="panel"><h3>ترتيب المحاضرات المفتوحة</h3><p class="mut">رتّب المحاضرات بالأهمية اللي إنت شايفها. الدكتور بيشوفها بالترتيب ده في البوت واللوحة، من غير ما يشوف الأولوية.</p><div id="dq">بيحمّل…</div></div>' : ''}
   <h3>آخر المحاضرات</h3>${lecTable(d.lectures)}
   <h3>العقوبات</h3>${d.penalties.length ? d.penalties.map(p => `<p>${pill(PST[p.status][0], PST[p.status][1])} ${esc(p.kind)}${p.amount ? ' · ' + money(p.amount) : ''} · ${esc(p.reason)} <span class="mut">${fmt(p.created_at)}</span></p>`).join('') : '<p class="mut">مفيش</p>'}`);
   if ($('#cf')) $('#cf').onsubmit = async e => { e.preventDefault(); await api('PATCH', '/api/doctors/' + id, Object.fromEntries(new FormData(e.target))); toast('اتحفظ'); openDoctor(id); };
+  if ($('#dq')) {
+    let q = (await api('GET', `/api/lectures?doctor=${id}&sort=queue&limit=300`)).filter(l => !(l.video_at && l.q_at));
+    const draw = () => { $('#dq').innerHTML = q.length ? `<table class="stack"><tbody>${q.map((l, i) => `<tr><td><b>${i + 1}</b></td><td>#${l.id} ${esc(l.name)}<div class="mut"><span dir="ltr">${esc(l.batch_code || '')}</span> · ${fmt(l.sent_at)}${l.excused ? ' · مستثناة' : ''}</div></td><td>${pill(...PRI[l.priority ?? 1])} ${pill(...LS[l.state])}</td><td class="n"><button class="btn g sm" data-up="${i}" ${i ? '' : 'disabled'}>▲</button> <button class="btn g sm" data-dn="${i}" ${i < q.length - 1 ? '' : 'disabled'}>▼</button></td></tr>`).join('')}</tbody></table><button class="btn a sm" id="qsave" style="margin-top:8px">حفظ الترتيب</button>` : empty('مفيش محاضرات مفتوحة');
+      document.querySelectorAll('[data-up]').forEach(b => (b.onclick = () => { const i = +b.dataset.up; [q[i - 1], q[i]] = [q[i], q[i - 1]]; draw(); }));
+      document.querySelectorAll('[data-dn]').forEach(b => (b.onclick = () => { const i = +b.dataset.dn; [q[i + 1], q[i]] = [q[i], q[i + 1]]; draw(); }));
+      if ($('#qsave')) $('#qsave').onclick = async () => { await api('POST', `/api/doctors/${id}/queue`, { order: q.map(l => l.id) }); toast('الترتيب اتحفظ'); };
+    };
+    draw();
+  }
 }
 
 /* ----- team ----- */
@@ -398,7 +417,8 @@ V.account = async () => {
   ME = await api('GET', '/api/me');
   let fin = '';
   if (ME.role !== 'admin') { const f = await api('GET', '/api/finance/' + ME.id); fin = `<section class="panel"><h3>حسابي المالي (الفترة الحالية)</h3>${finBody(f, false)}</section>`; }
-  $('#main').innerHTML = `<h2>${esc(ME.name)}</h2><p class="note">${esc(ME.email)} · ${ROLE[ME.role]}</p>
+  const rc = ME.role !== 'admin' ? await rankCard() : '';
+  $('#main').innerHTML = `<h2>${esc(ME.name)}</h2><p class="note">${esc(ME.email)} · ${ROLE[ME.role]}</p>${rc}
   <section class="panel"><h3>بوت تليجرام</h3>${ME.linked ? '<p class="ok">حسابك مربوط بالبوت ✓</p>' : `<p>افتح بوت ${esc(ME.brand)} على تليجرام، ودوس Start، وابعت الكود ده:</p><p style="font-size:22px"><code>${esc(ME.link_code || '')}</code></p>`}</section>
   ${fin}
   <form id="pw" class="panel"><h3>تغيير كلمة المرور</h3><div class="two"><label>الحالية<input type="password" name="old" required></label><label>الجديدة (8 حروف على الأقل)<input type="password" name="new" minlength="8" required></label></div><button class="btn sm">تغيير</button></form>`;

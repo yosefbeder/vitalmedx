@@ -13,7 +13,7 @@ async function reminders() {
   for (const l of all('SELECT * FROM lectures WHERE (video_at IS NULL OR q_at IS NULL)')) {
     const left = l.sent_at + D - now;
     if (left > 0 && left <= remindMs && !l.reminded) { run('UPDATE lectures SET reminded=1 WHERE id=?', l.id); await bot.remind(l, false); }
-    if (left <= 0 && !l.overdue_notified) { run('UPDATE lectures SET overdue_notified=1 WHERE id=?', l.id); await bot.remind(l, true); }
+    if (left <= 0 && !l.overdue_notified && !l.excused) { run('UPDATE lectures SET overdue_notified=1 WHERE id=?', l.id); await bot.remind(l, true); }
   }
 }
 function dailySummaryText() {

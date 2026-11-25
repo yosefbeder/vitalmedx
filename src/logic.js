@@ -4,6 +4,7 @@ const { one, all, num, setting } = require('./db');
 const H = 3600e3, DAY = 864e5;
 const now = () => Date.now();
 const deadline = () => num('deadline_hours') * H;
+const PRIORITY = { 0: 'غير مهم', 1: 'عادي', 2: 'مهم', 3: 'مهم جداً' };
 const TYPES = { theory: 'نظري', practical: 'عملي', revision: 'مراجعة', repeat: 'معادة' };
 const DAILY = { new_data: 'الداتا الجديدة اتبعتت للدكاترة', changed: 'المحاضرات المتغيرة اتراجعت واتبعتت', uploaded: 'اللي اتسلم اترفع على Nerdio وقناة تليجرام',
   questions: 'أسئلة الطلبة اتوصّلت وردودها رجعت', post: 'بوست في القناة العامة', remind: 'تذكير الدكاترة بالمحاضرات المتأخرة' };
@@ -38,15 +39,15 @@ function scopedDoctorIds(u) {
 }
 
 /* ---------- lecture state ---------- */
-function fileState(at, ok, sent) {
-  if (!at) return now() - sent > deadline() ? 'overdue' : 'pending';
+function fileState(at, ok, sent, ex) {
+  if (!at) return !ex && now() - sent > deadline() ? 'overdue' : 'pending';
   return ok ? 'approved' : 'review';
 }
-const isLate = (at, sent) => (at ? at - sent > deadline() : now() - sent > deadline());
+const isLate = (at, sent, ex) => (ex ? false : at ? at - sent > deadline() : now() - sent > deadline());
 const delivered = l => !!(l.video_at && l.q_at);
 const deliveredAt = l => (delivered(l) ? Math.max(l.video_at, l.q_at) : null);
 function lectureState(l) {
-  const a = fileState(l.video_at, l.video_ok_at, l.sent_at), b = fileState(l.q_at, l.q_ok_at, l.sent_at);
+  const a = fileState(l.video_at, l.video_ok_at, l.sent_at, l.excused), b = fileState(l.q_at, l.q_ok_at, l.sent_at, l.excused);
   if (a === 'overdue' || b === 'overdue') return 'late';
   if (a === 'pending' || b === 'pending') return 'progress';
   if (!(l.video_ok_at && l.q_ok_at)) return 'review';
@@ -56,10 +57,10 @@ const uploadLate = l => { const d = l.video_ok_at && l.q_ok_at ? Math.max(l.vide
 function decorate(l) {
   const b = one('SELECT b.code, b.year, u.name uni FROM batches b JOIN universities u ON u.id=b.university_id WHERE b.id=?', l.batch_id) || {};
   const d = one('SELECT name FROM users WHERE id=?', l.doctor_id) || {}, c = one('SELECT name FROM users WHERE id=?', l.coordinator_id) || {};
-  const qs = l.no_q ? 'na' : fileState(l.q_at, l.q_ok_at, l.sent_at);
+  const qs = l.no_q ? 'na' : fileState(l.q_at, l.q_ok_at, l.sent_at, l.excused);
   return { ...l, batch_code: b.code, batch_year: b.year, university: b.uni, doctor: d.name, coordinator: c.name, state: lectureState(l),
-    v_state: fileState(l.video_at, l.video_ok_at, l.sent_at), q_state: qs,
-    v_late: isLate(l.video_at, l.sent_at), q_late: isLate(l.q_at, l.sent_at), upload_late: uploadLate(l), deadline_at: l.sent_at + deadline() };
+    v_state: fileState(l.video_at, l.video_ok_at, l.sent_at, l.excused), q_state: qs,
+    v_late: isLate(l.video_at, l.sent_at, l.excused), q_late: isLate(l.q_at, l.sent_at, l.excused), upload_late: uploadLate(l), deadline_at: l.sent_at + deadline() };
 }
 
 /* ---------- doctors ---------- */
@@ -70,10 +71,10 @@ function doctorStats(id, w) {
   const t0 = dayStart(), m0 = now() - 30 * DAY; let today = 0, month = 0;
   for (const l of ls) {
     for (const [at, arr] of [[l.video_at, vT], [l.q_at, qT]]) {
-      if (fileState(at, 1, l.sent_at) !== 'pending') { due++; if (!isLate(at, l.sent_at)) onTime++; }
+      if (fileState(at, 1, l.sent_at, l.excused) !== 'pending') { due++; if (!isLate(at, l.sent_at, l.excused)) onTime++; }
       if (at && !(l.no_q && arr === qT)) arr.push(at - l.sent_at);
     }
-    if (isLate(l.video_at, l.sent_at) || isLate(l.q_at, l.sent_at)) lateEver++;
+    if (isLate(l.video_at, l.sent_at, l.excused) || isLate(l.q_at, l.sent_at, l.excused)) lateEver++;
     if (lectureState(l) === 'late') lateNow++;
     if (delivered(l)) { deliveredN++; const d = deliveredAt(l); if (d >= t0) today++; if (d >= m0) month++; }
   }
@@ -81,7 +82,7 @@ function doctorStats(id, w) {
   const byDay = {};
   for (const l of ls) if (l.sent_at >= m0 && now() - l.sent_at > deadline()) (byDay[dayStr(l.sent_at)] ||= []).push(l);
   let shortDays = 0;
-  for (const arr of Object.values(byDay)) { const capped = arr.sort((a, b) => a.sent_at - b.sent_at).slice(0, doc.capacity); if (capped.some(l => isLate(l.video_at, l.sent_at) || isLate(l.q_at, l.sent_at))) shortDays++; }
+  for (const arr of Object.values(byDay)) { const capped = arr.sort((a, b) => a.sent_at - b.sent_at).slice(0, doc.capacity); if (capped.some(l => isLate(l.video_at, l.sent_at, l.excused) || isLate(l.q_at, l.sent_at, l.excused))) shortDays++; }
   const rated = ls.filter(l => l.r_video != null);
   const avgOf = k => (rated.length ? rated.reduce((s, l) => s + (l[k] || 0), 0) / rated.length : null);
   const comp = ratio(onTime, due);
@@ -122,7 +123,7 @@ function coordinatorStats(id, w = defWin()) {
 function supervisorStats(id, w = defWin()) {
   const bids = all('SELECT id FROM batches WHERE supervisor_id=?', id).map(r => r.id);
   const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=? AND sent_at<?`, w.from, w.to);
-  let due = 0, ok = 0; for (const l of ls) for (const at of [l.video_at, l.q_at]) if (fileState(at, 1, l.sent_at) !== 'pending') { due++; if (!isLate(at, l.sent_at)) ok++; }
+  let due = 0, ok = 0; for (const l of ls) for (const at of [l.video_at, l.q_at]) if (fileState(at, 1, l.sent_at, l.excused) !== 'pending') { due++; if (!isLate(at, l.sent_at, l.excused)) ok++; }
   const appr = ls.filter(l => l.video_ok_at && l.q_ok_at); const up = appr.filter(l => !uploadLate(l));
   const probs = all(`SELECT * FROM tickets WHERE kind='problem' AND batch_id IN (${inList(bids)}) AND created_at>=? AND created_at<?`, w.from, w.to);
   const open = probs.filter(p => !p.closed_at).length;
@@ -236,5 +237,5 @@ function coordinatorReport(id, day = dayStr()) {
   return { day, items: [...Object.entries(DAILY), ...Object.entries(WEEKLY)].map(([k, label]) => ({ key: k, label, weekly: !!WEEKLY[k], done: !!map[k]?.done, note: map[k]?.note || '' })), summary: daySummary({ role: 'coordinator', id }, Date.parse(day + 'T12:00:00Z')) };
 }
 
-module.exports = { monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
+module.exports = { PRIORITY, monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
   doctorStats, coordinatorStats, supervisorStats, csStats, payable, daySummary, batchRows, alerts, aiPrompt, coordinatorReport, fmtDur, latestSubs };

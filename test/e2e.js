@@ -178,6 +178,21 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const last = rk.lists.coordinator.at(-1);
     await admin.req('PUT', '/api/rankings', { month: rk.month, role: 'coordinator', user_id: last.id, position: 1 });
     rk = await admin.req('GET', '/api/rankings?month=' + mon); ok(rk.lists.coordinator[0].id === last.id && rk.lists.coordinator[0].manual && rk.lists.coordinator.length === 5, 'manual rank');
+    // priority hidden from doctor, supervisor sets priority + excuse + queue
+    const LP = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', name: 'Urgent one', priority: 3 });
+    ok((await walaa.req('GET', '/api/lectures/' + LP.id)).priority === 3, 'priority saved');
+    ok(!('priority' in (await doc.req('GET', '/api/lectures/' + LP.id))), 'doctor cannot see priority');
+    await sup.req('PATCH', '/api/lectures/' + LP.id, { action: 'priority', priority: 0 });
+    ok((await walaa.req('GET', '/api/lectures/' + LP.id)).priority === 0, 'supervisor changed priority');
+    await walaa.req('PATCH', '/api/lectures/' + LP.id, { action: 'excuse' }).then(() => ok(false), e => ok(e.status === 403, 'coordinator cannot excuse'));
+    run('UPDATE lectures SET sent_at=? WHERE id=?', Date.now() - 30 * 36e5, LP.id);
+    ok((await walaa.req('GET', '/api/lectures/' + LP.id)).state === 'late', 'late before excuse');
+    await sup.req('PATCH', '/api/lectures/' + LP.id, { action: 'excuse', note: 'اتقدم عليها' });
+    ok((await walaa.req('GET', '/api/lectures/' + LP.id)).state === 'progress', 'excused not late');
+    await sup.req('POST', `/api/doctors/${d.id}/queue`, { order: [LP.id, L2.id] }); tgCalls.length = 0;
+    await hook(msg(5551, { text: '/tasks' })); await sleep(100);
+    const tasksTxt = tgCalls.find(c => c.method === 'sendMessage').body.text; ok(tasksTxt.indexOf('#' + LP.id) < tasksTxt.indexOf('#' + L2.id) && !/مهم/.test(tasksTxt), 'queue order in bot, no priority');
+    const mr = await walaa.req('GET', '/api/myrank'); ok(mr.rank >= 1 && mr.of === 5, 'myrank');
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);

@@ -24,7 +24,7 @@ const req1 = (v, name) => { if (v == null || v === '' || Number.isNaN(v)) fail(4
 function canBatch(u, bid) { const ids = L.batchIds(u); return u.role !== 'doctor' && (!ids || ids.includes(Number(bid))); }
 function sanitizeLecture(l, u) {
   const d = L.decorate(l);
-  if (u.role === 'doctor') { delete d.batch_code; delete d.batch_year; delete d.university; delete d.coordinator; delete d.batch_id; delete d.coordinator_id; delete d.lec_file; delete d.src_q_file; delete d.video_file; delete d.q_file; }
+  if (u.role === 'doctor') { delete d.batch_code; delete d.batch_year; delete d.university; delete d.coordinator; delete d.batch_id; delete d.coordinator_id; delete d.lec_file; delete d.src_q_file; delete d.video_file; delete d.q_file; delete d.priority; delete d.excuse_note; }
   return d;
 }
 
@@ -63,7 +63,7 @@ route('GET', '/api/home', async ({ u }) => {
     const days = []; const t0 = L.dayStart();
     const ls = L.scopedLectures(u, 'AND sent_at>=?', t0 - 13 * L.DAY);
     for (let i = 13; i >= 0; i--) { const a = t0 - i * L.DAY, b = a + L.DAY, d = ls.filter(l => l.sent_at >= a && l.sent_at < b);
-      days.push({ day: L.dayStr(a + L.H * 12), sent: d.length, late: d.filter(l => L.isLate(l.video_at, l.sent_at) || L.isLate(l.q_at, l.sent_at)).length, ontime: d.filter(l => L.delivered(l) && !L.isLate(l.video_at, l.sent_at) && !L.isLate(l.q_at, l.sent_at)).length }); }
+      days.push({ day: L.dayStr(a + L.H * 12), sent: d.length, late: d.filter(l => L.isLate(l.video_at, l.sent_at, l.excused) || L.isLate(l.q_at, l.sent_at, l.excused)).length, ontime: d.filter(l => L.delivered(l) && !L.isLate(l.video_at, l.sent_at, l.excused) && !L.isLate(l.q_at, l.sent_at, l.excused)).length }); }
     out.days = days;
   }
   return out;
@@ -118,12 +118,26 @@ route('PATCH', '/api/doctors/:id', async ({ u, body, p }) => {
   audit(u.id, 'doctor_contract', { id, body }); return { ok: true };
 });
 
+route('POST', '/api/doctors/:id/queue', async ({ u, body, p }) => {
+  need(u, 'admin', 'supervisor'); const did = int(p.id), ids = (Array.isArray(body.order) ? body.order : []).map(Number);
+  tx(() => ids.forEach((lid, i) => { const l = one('SELECT batch_id FROM lectures WHERE id=? AND doctor_id=?', lid, did); if (l && canBatch(u, l.batch_id)) run('UPDATE lectures SET queue_pos=? WHERE id=?', i + 1, lid); }));
+  audit(u.id, 'queue', { did, ids }); return { ok: true };
+});
+route('GET', '/api/myrank', async ({ u }) => {
+  if (u.role === 'admin') return { rank: null };
+  const m = L.dayStr().slice(0, 7), list = rankings(m)[u.role] || [], me = list.find(x => x.id === u.id);
+  return { month: m, rank: me ? me.rank : null, of: list.length };
+});
+
 /* lectures */
 route('GET', '/api/lectures', async ({ u, q }) => {
   let ls = L.scopedLectures(u, 'ORDER BY sent_at DESC LIMIT 1500');
   if (q.batch) ls = ls.filter(l => l.batch_id === int(q.batch));
   if (q.doctor) ls = ls.filter(l => l.doctor_id === int(q.doctor));
   if (q.type) ls = ls.filter(l => l.type === q.type);
+  if (q.priority !== undefined && q.priority !== '' && u.role !== 'doctor') ls = ls.filter(l => l.priority === int(q.priority));
+  if (q.sort === 'priority' && u.role !== 'doctor') ls.sort((a, b) => b.priority - a.priority || a.sent_at - b.sent_at);
+  if (u.role === 'doctor' || q.sort === 'queue') ls.sort((a, b) => (L.delivered(a) - L.delivered(b)) || ((a.queue_pos ?? 1e9) - (b.queue_pos ?? 1e9)) || (b.sent_at - a.sent_at));
   let out = ls.map(l => sanitizeLecture(l, u));
   if (q.state) out = out.filter(l => l.state === q.state);
   if (q.q) { const s = String(q.q).toLowerCase(); out = out.filter(l => `${l.id} ${l.name} ${l.batch_code || ''} ${l.doctor}`.toLowerCase().includes(s)); }
@@ -144,8 +158,8 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
   const dflt = type === 'repeat' ? doc.price_theory * Number(setting('repeat_ratio')) : doc[`price_${type}`];
   const price = real(body.price) ?? dflt;
   const coord = u.role === 'coordinator' ? u.id : (one('SELECT coordinator_id FROM batches WHERE id=?', bid) || {}).coordinator_id || u.id;
-  const noq = body.no_q === true || body.no_q === '1' || body.no_q === 'on', t0 = Date.now();
-  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,name,price,sent_at,no_q,q_at,q_ok_at) VALUES(?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null);
+  const noq = body.no_q === true || body.no_q === '1' || body.no_q === 'on', t0 = Date.now(), pr = Math.max(0, Math.min(3, int(body.priority) ?? 1));
+  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,name,price,sent_at,no_q,q_at,q_ok_at,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null, pr);
   const l = one('SELECT * FROM lectures WHERE id=?', Number(r.lastInsertRowid));
   audit(u.id, 'lecture_send', { id: l.id });
   const fl = [];
@@ -157,7 +171,9 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
 });
 route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
   const l = one('SELECT * FROM lectures WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  if (!canBatch(u, l.batch_id) || !['admin', 'coordinator'].includes(u.role)) fail(403, 'مش مسموح');
+  const supOk = ['priority', 'excuse', 'unexcuse'].includes(body.action);
+  if (!canBatch(u, l.batch_id) || !(['admin', 'coordinator'].includes(u.role) || (supOk && u.role === 'supervisor'))) fail(403, 'مش مسموح');
+  if ((body.action === 'excuse' || body.action === 'unexcuse') && !['admin', 'supervisor'].includes(u.role)) fail(403, 'استثناء التأخير للمشرف والأدمن بس');
   const t = Date.now();
   switch (body.action) {
     case 'approve':
@@ -179,6 +195,9 @@ route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
       if (l.video_file) await bot.forwardFile(me.tg_id, l.video_file, 'video', `#${l.id} ${l.name} · فيديو`);
       if (l.q_file) await bot.forwardFile(me.tg_id, l.q_file, 'doc', `#${l.id} ${l.name} · ملف الأسئلة`);
       break; }
+    case 'priority': run('UPDATE lectures SET priority=? WHERE id=?', Math.max(0, Math.min(3, int(body.priority) ?? 1)), l.id); break;
+    case 'excuse': run('UPDATE lectures SET excused=1, excuse_note=? WHERE id=?', str(body.note, 300), l.id); break;
+    case 'unexcuse': run('UPDATE lectures SET excused=0, excuse_note=NULL WHERE id=?', l.id); break;
     case 'exempt_q': if (l.q_at && !l.no_q) fail(400, 'ملف الأسئلة اتسلم خلاص'); run('UPDATE lectures SET no_q=1, q_at=sent_at, q_ok_at=?, q_file=NULL WHERE id=?', t, l.id); break;
     case 'unexempt_q': if (!l.no_q) fail(400, 'المحاضرة مش معفية'); if (l.settlement_id) fail(400, 'المحاضرة اتحاسبت'); run('UPDATE lectures SET no_q=0, q_at=NULL, q_ok_at=NULL WHERE id=?', l.id); break;
     case 'cancel': if (u.role !== 'admin') fail(403, 'الأدمن بس'); if (l.settlement_id) fail(400, 'المحاضرة دي دخلت في حساب اتقفل، مينفعش تتمسح'); run('UPDATE tickets SET lecture_id=NULL WHERE lecture_id=?', l.id); run('DELETE FROM price_log WHERE lecture_id=?', l.id); run('DELETE FROM lectures WHERE id=?', l.id); break;

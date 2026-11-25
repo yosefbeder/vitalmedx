@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, user_id INTEGER, action
 `);
 
 if (!db.prepare("SELECT 1 FROM pragma_table_info('lectures') WHERE name='no_q'").get()) db.exec('ALTER TABLE lectures ADD COLUMN no_q INTEGER NOT NULL DEFAULT 0');
+for (const [c, d] of [['priority', 'INTEGER NOT NULL DEFAULT 1'], ['queue_pos', 'INTEGER'], ['excused', 'INTEGER NOT NULL DEFAULT 0'], ['excuse_note', 'TEXT']]) if (!db.prepare("SELECT 1 FROM pragma_table_info('lectures') WHERE name=?").get(c)) db.exec(`ALTER TABLE lectures ADD COLUMN ${c} ${d}`);
 db.exec('CREATE TABLE IF NOT EXISTS rank_overrides(month TEXT NOT NULL, role TEXT NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, by INTEGER, at INTEGER, PRIMARY KEY(month, role, user_id))');
 
 const DEFAULTS = {

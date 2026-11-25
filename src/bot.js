@@ -70,12 +70,12 @@ const adminChat = () => process.env.ADMIN_CHAT_ID;
 const sendAdmin = text => send(adminChat(), text);
 
 function openLectures(docId, field) {
-  return all(`SELECT * FROM lectures WHERE doctor_id=? AND ${field} IS NULL ORDER BY sent_at LIMIT 20`, docId);
+  return all(`SELECT * FROM lectures WHERE doctor_id=? AND ${field} IS NULL ORDER BY queue_pos IS NULL, queue_pos, sent_at LIMIT 20`, docId);
 }
 function pickKeyboard(docId, kind, pendingId) {
   const field = kind === 'video' ? 'video_at' : 'q_at';
   const ls = openLectures(docId, field);
-  return { ls, kb: { inline_keyboard: ls.map(l => [{ text: `#${l.id} ${l.name} · ${L.TYPES[l.type]}${L.isLate(null, l.sent_at) ? ' · متأخر' : ''}`.slice(0, 60), callback_data: `p:${pendingId}:${l.id}` }]) } };
+  return { ls, kb: { inline_keyboard: ls.map(l => [{ text: `#${l.id} ${l.name} · ${L.TYPES[l.type]}${L.isLate(null, l.sent_at, l.excused) ? ' · متأخر' : ''}`.slice(0, 60), callback_data: `p:${pendingId}:${l.id}` }]) } };
 }
 
 async function handleUpdate(u) {
@@ -97,9 +97,10 @@ async function handleUpdate(u) {
   if (text === '/start') return send(chat, `أهلاً ${user.name} 👋\n/tasks لعرض المحاضرات المفتوحة`);
   if (user.role !== 'doctor') return send(chat, `أهلاً ${user.name}، حسابك مربوط بالبوت ✓\nالبوت بيستقبل الفيديوهات وملفات الأسئلة من حسابات الدكاترة بس.\nإرسال المحاضرات للدكاترة بيتم من لوحة التحكم، والبوت هيبعتلك هنا أي ملفات تطلبها من صفحة المحاضرة (زرار "ابعتلي الملفات على تليجرام").`);
   if (text === '/tasks') {
-    const ls = all('SELECT * FROM lectures WHERE doctor_id=? AND (video_at IS NULL OR q_at IS NULL) ORDER BY sent_at', user.id);
+    const ls = all('SELECT * FROM lectures WHERE doctor_id=? AND (video_at IS NULL OR q_at IS NULL) ORDER BY queue_pos IS NULL, queue_pos, sent_at', user.id);
+    if (ls.length) ls.forEach((l, i) => (l._n = i + 1));
     if (!ls.length) return send(chat, 'مفيش محاضرات مفتوحة دلوقتي ✓');
-    return send(chat, ls.map(l => `#${l.id} ${l.name} (${L.TYPES[l.type]})\nناقص: ${[!l.video_at && 'فيديو', !l.q_at && 'أسئلة'].filter(Boolean).join(' + ')} · ${L.isLate(null, l.sent_at) ? 'متأخر' : 'آخر موعد ' + fmt(l.sent_at + L.deadline())}`).join('\n\n'));
+    return send(chat, 'المحاضرات بالترتيب اللي المفروض تبدأ بيه:\n\n' + ls.map(l => `${l._n}) #${l.id} ${l.name} (${L.TYPES[l.type]})\nناقص: ${[!l.video_at && 'فيديو', !l.q_at && 'أسئلة'].filter(Boolean).join(' + ')} · ${L.isLate(null, l.sent_at, l.excused) ? 'متأخر' : 'آخر موعد ' + fmt(l.sent_at + L.deadline())}`).join('\n\n'));
   }
   // reply to a student question
   const replyTo = m.reply_to_message && m.reply_to_message.message_id;
