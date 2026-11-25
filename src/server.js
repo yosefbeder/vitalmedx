@@ -144,7 +144,8 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
   const dflt = type === 'repeat' ? doc.price_theory * Number(setting('repeat_ratio')) : doc[`price_${type}`];
   const price = real(body.price) ?? dflt;
   const coord = u.role === 'coordinator' ? u.id : (one('SELECT coordinator_id FROM batches WHERE id=?', bid) || {}).coordinator_id || u.id;
-  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,name,price,sent_at) VALUES(?,?,?,?,?,?,?)', bid, did, coord, type, name, price, Date.now());
+  const noq = body.no_q === true || body.no_q === '1' || body.no_q === 'on', t0 = Date.now();
+  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,name,price,sent_at,no_q,q_at,q_ok_at) VALUES(?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null);
   const l = one('SELECT * FROM lectures WHERE id=?', Number(r.lastInsertRowid));
   audit(u.id, 'lecture_send', { id: l.id });
   const fl = [];
@@ -178,6 +179,8 @@ route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
       if (l.video_file) await bot.forwardFile(me.tg_id, l.video_file, 'video', `#${l.id} ${l.name} · فيديو`);
       if (l.q_file) await bot.forwardFile(me.tg_id, l.q_file, 'doc', `#${l.id} ${l.name} · ملف الأسئلة`);
       break; }
+    case 'exempt_q': if (l.q_at && !l.no_q) fail(400, 'ملف الأسئلة اتسلم خلاص'); run('UPDATE lectures SET no_q=1, q_at=sent_at, q_ok_at=?, q_file=NULL WHERE id=?', t, l.id); break;
+    case 'unexempt_q': if (!l.no_q) fail(400, 'المحاضرة مش معفية'); if (l.settlement_id) fail(400, 'المحاضرة اتحاسبت'); run('UPDATE lectures SET no_q=0, q_at=NULL, q_ok_at=NULL WHERE id=?', l.id); break;
     case 'cancel': if (u.role !== 'admin') fail(403, 'الأدمن بس'); if (l.settlement_id) fail(400, 'المحاضرة دي دخلت في حساب اتقفل، مينفعش تتمسح'); run('UPDATE tickets SET lecture_id=NULL WHERE lecture_id=?', l.id); run('DELETE FROM price_log WHERE lecture_id=?', l.id); run('DELETE FROM lectures WHERE id=?', l.id); break;
     default: fail(400, 'إجراء غير معروف');
   }
@@ -329,6 +332,65 @@ route('POST', '/api/finance/:id/settle', async ({ u, body, p }) => {
 route('PATCH', '/api/settlements/:id', async ({ u, p }) => { need(u, 'admin'); run('UPDATE settlements SET paid_at=? WHERE id=?', Date.now(), int(p.id)); return { ok: true }; });
 route('POST', '/api/bonuses', async ({ u, body }) => { need(u, 'admin'); run('INSERT INTO bonuses(user_id,amount,note,by,created_at) VALUES(?,?,?,?,?)', req1(int(body.user_id), 'الشخص'), req1(real(body.amount), 'المبلغ'), str(body.note, 300), u.id, Date.now()); return { ok: true }; });
 route('POST', '/api/extra', async ({ u, body }) => { need(u, 'admin'); run('INSERT INTO extra_pay(user_id,amount,note,by,created_at) VALUES(?,?,?,?,?)', req1(int(body.user_id), 'الشخص'), req1(real(body.amount), 'المبلغ'), str(body.note, 300), u.id, Date.now()); return { ok: true }; });
+
+/* deletes (admin) */
+route('DELETE', '/api/penalties/:id', async ({ u, p }) => { need(u, 'admin'); const x = one('SELECT settlement_id FROM penalties WHERE id=?', int(p.id)) || fail(404, 'مش موجود'); if (x.settlement_id) fail(400, 'دخل في حساب اتقفل، امسح التقفيل الأول'); run('DELETE FROM penalties WHERE id=?', int(p.id)); return { ok: true }; });
+route('DELETE', '/api/bonuses/:id', async ({ u, p }) => { need(u, 'admin'); run('DELETE FROM bonuses WHERE id=? AND settlement_id IS NULL', int(p.id)); return { ok: true }; });
+route('DELETE', '/api/extra/:id', async ({ u, p }) => { need(u, 'admin'); run('DELETE FROM extra_pay WHERE id=? AND settlement_id IS NULL', int(p.id)); return { ok: true }; });
+route('DELETE', '/api/subs/:id', async ({ u, p }) => { need(u, 'admin'); run('DELETE FROM subs WHERE id=?', int(p.id)); return { ok: true }; });
+route('DELETE', '/api/settlements/:id', async ({ u, p }) => {
+  need(u, 'admin'); const id = int(p.id);
+  tx(() => { for (const t of ['lectures', 'penalties', 'bonuses', 'extra_pay']) run(`UPDATE ${t} SET settlement_id=NULL WHERE settlement_id=?`, id); run('DELETE FROM settlements WHERE id=?', id); });
+  audit(u.id, 'settlement_delete', { id }); return { ok: true };
+});
+route('DELETE', '/api/users/:id', async ({ u, p }) => {
+  need(u, 'admin'); const id = int(p.id); if (id === u.id) fail(400, 'مينفعش تمسح نفسك');
+  const used = one('SELECT (SELECT COUNT(*) FROM lectures WHERE doctor_id=?1 OR coordinator_id=?1) + (SELECT COUNT(*) FROM tickets WHERE created_by=?1 OR doctor_id=?1) + (SELECT COUNT(*) FROM settlements WHERE user_id=?1) + (SELECT COUNT(*) FROM batches WHERE supervisor_id=?1 OR coordinator_id=?1) n', id).n;
+  if (used) fail(400, 'المستخدم ده ليه شغل متسجل أو دفعات، اقفل حسابه بدل المسح (شيل علامة الحساب شغال)');
+  tx(() => { for (const t of ['penalties', 'bonuses', 'extra_pay', 'checklist', 'reports', 'shift_notes', 'rank_overrides']) run(`DELETE FROM ${t} WHERE user_id=?`, id); run('DELETE FROM doctors WHERE user_id=?', id); run('DELETE FROM users WHERE id=?', id); });
+  return { ok: true };
+});
+route('POST', '/api/reset', async ({ u, body }) => {
+  need(u, 'admin'); if (body.confirm !== 'امسح كل حاجة') fail(400, 'اكتب الجملة صح عشان تأكد');
+  await jobs.backup();
+  tx(() => { for (const t of ['tickets', 'price_log', 'lectures', 'checklist', 'reports', 'subs', 'penalties', 'bonuses', 'extra_pay', 'settlements', 'shift_notes', 'bot_pending', 'rank_overrides']) run(`DELETE FROM ${t}`); run("UPDATE batches SET exam_date=NULL, exam_note=NULL"); });
+  if (body.doctors) { const ds = all("SELECT id FROM users WHERE role='doctor'"); tx(() => { for (const d of ds) { run('DELETE FROM doctors WHERE user_id=?', d.id); run('DELETE FROM users WHERE id=?', d.id); } }); }
+  audit(u.id, 'reset', { doctors: !!body.doctors }); return { ok: true };
+});
+
+/* rankings */
+const RANK_ROLES = { doctor: 'الدكاترة', coordinator: 'مسؤولين الدفعات', supervisor: 'المشرفين', cs: 'خدمة العملاء' };
+function rankings(month) {
+  const w = L.monthWin(month), out = {};
+  for (const role of Object.keys(RANK_ROLES)) {
+    const users = all('SELECT id, name FROM users WHERE role=? AND active=1', role);
+    const rows = users.map(x => {
+      let score, detail;
+      if (role === 'doctor') { const s = L.doctorStats(x.id, w); score = s.assigned ? s.score.total : null; detail = `${s.delivered}/${s.assigned} محاضرة · التزام ${Math.round(s.compliance * 100)}%`; }
+      else if (role === 'coordinator') { const s = L.coordinatorStats(x.id, w); score = s.score.total; detail = `ردود اتأخرت ${s.replyLate} · رفع اتأخر ${s.uploadLate}`; }
+      else if (role === 'supervisor') { const s = L.supervisorStats(x.id, w); score = s.score.total; detail = `${s.batches} دفعة · مشاكل مفتوحة ${s.openProblems}`; }
+      else { const s = L.csStats(x.id, w); score = s.handled ? s.score : null; detail = `${s.handled} تذكرة · اتأخر ${s.late}`; }
+      return { id: x.id, name: x.name, score, detail };
+    }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+    rows.forEach((r, i) => (r.auto = i + 1));
+    const ov = Object.fromEntries(all('SELECT user_id, position FROM rank_overrides WHERE month=? AND role=?', month, role).map(o => [o.user_id, o.position]));
+    const fixed = rows.filter(r => ov[r.id]).sort((a, b) => ov[a.id] - ov[b.id]), free = rows.filter(r => !ov[r.id]);
+    const final = new Array(rows.length).fill(null);
+    for (const r of fixed) { let pos = Math.min(Math.max(1, ov[r.id]), rows.length) - 1; while (final[pos]) pos++; if (pos >= rows.length) pos = final.indexOf(null); final[pos] = { ...r, manual: true }; }
+    for (const r of free) final[final.indexOf(null)] = r;
+    out[role] = final.map((r, i) => ({ ...r, rank: i + 1 }));
+  }
+  return out;
+}
+route('GET', '/api/rankings', async ({ u, q }) => { need(u, 'admin'); const m = /^\d{4}-\d{2}$/.test(q.month || '') ? q.month : L.dayStr().slice(0, 7); return { month: m, roles: RANK_ROLES, lists: rankings(m) }; });
+route('PUT', '/api/rankings', async ({ u, body }) => {
+  need(u, 'admin'); const m = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : fail(400, 'الشهر غلط');
+  if (!(body.role in RANK_ROLES)) fail(400, 'الدور غلط');
+  const pos = int(body.position), uid = req1(int(body.user_id), 'الشخص');
+  if (!pos) run('DELETE FROM rank_overrides WHERE month=? AND role=? AND user_id=?', m, body.role, uid);
+  else run('INSERT INTO rank_overrides(month,role,user_id,position,by,at) VALUES(?,?,?,?,?,?) ON CONFLICT(month,role,user_id) DO UPDATE SET position=excluded.position, by=excluded.by, at=excluded.at', m, body.role, uid, pos, u.id, Date.now());
+  return { ok: true };
+});
 
 /* users & settings (admin) */
 route('GET', '/api/users', async ({ u }) => { need(u, 'admin'); return all('SELECT u.id,u.name,u.email,u.role,u.active,u.salary,u.phone,u.link_code,(u.tg_id IS NOT NULL) linked, d.price_theory,d.price_practical,d.price_revision,d.capacity FROM users u LEFT JOIN doctors d ON d.user_id=u.id ORDER BY u.role,u.name'); });

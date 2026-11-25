@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, user_id INTEGER, action TEXT NOT NULL, detail TEXT, at INTEGER NOT NULL);
 `);
 
+if (!db.prepare("SELECT 1 FROM pragma_table_info('lectures') WHERE name='no_q'").get()) db.exec('ALTER TABLE lectures ADD COLUMN no_q INTEGER NOT NULL DEFAULT 0');
+db.exec('CREATE TABLE IF NOT EXISTS rank_overrides(month TEXT NOT NULL, role TEXT NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, by INTEGER, at INTEGER, PRIMARY KEY(month, role, user_id))');
+
 const DEFAULTS = {
   deadline_hours: '24', remind_hours: '6', upload_minutes: '30', coord_reply_minutes: '60', cs_reply_minutes: '30',
   exam_alert_days: '10', report_time: '23:00', backup_time: '03:00', repeat_ratio: '0.5', brand: 'VitalMedX',

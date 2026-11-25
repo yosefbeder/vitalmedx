@@ -159,6 +159,34 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const bk = await jobs.backup(); ok(bk && fs.existsSync(bk), 'backup file'); ok(tgCalls.some(c => c.method === 'sendDocument' && c.body.multipart), 'backup sent');
     // webhook secret enforced
     const bad = await fetch(`http://127.0.0.1:${PORT}/tg/${SECRET}`, { method: 'POST', body: '{}' }); ok(bad.status === 404, 'webhook needs header');
+    // exemption: lecture without question file closes on video only
+    const LX = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'practical', name: 'Practical – no Q', no_q: true });
+    tgCalls.length = 0;
+    await hook(msg(5551, { document: { file_id: 'QQ', mime_type: 'application/pdf' } })); await sleep(100);
+    const kq = tgCalls.filter(c => c.body.reply_markup && c.body.reply_markup.inline_keyboard).pop();
+    ok(!kq || !kq.body.reply_markup.inline_keyboard.some(r => r[0].callback_data.endsWith(':' + LX.id)), 'exempt lecture not offered for Q');
+    await hook(msg(5551, { video: { file_id: 'VX', mime_type: 'video/mp4' } })); await sleep(100);
+    const kv = tgCalls.filter(c => c.body.reply_markup && c.body.reply_markup.inline_keyboard).pop();
+    await hook({ update_id: upd++, callback_query: { id: 'qx', from: { id: 5551 }, data: kv.body.reply_markup.inline_keyboard.find(r => r[0].callback_data.endsWith(':' + LX.id))[0].callback_data, message: { message_id: 9, chat: { id: 5551 } } } }); await sleep(100);
+    await walaa.req('PATCH', '/api/lectures/' + LX.id, { action: 'approve', video: true });
+    let lx = await walaa.req('GET', '/api/lectures/' + LX.id); ok(lx.q_state === 'na' && lx.state === 'upload', 'exempt → upload');
+    await walaa.req('PATCH', '/api/lectures/' + L2.id, { action: 'exempt_q' });
+    ok((await walaa.req('GET', '/api/lectures/' + L2.id)).q_state === 'na', 'exempt later');
+    // rankings + manual override
+    const mon = new Date().toISOString().slice(0, 7);
+    let rk = await admin.req('GET', '/api/rankings?month=' + mon); ok(rk.lists.coordinator.length === 5 && rk.lists.doctor[0].id === d.id, 'rankings');
+    const last = rk.lists.coordinator.at(-1);
+    await admin.req('PUT', '/api/rankings', { month: rk.month, role: 'coordinator', user_id: last.id, position: 1 });
+    rk = await admin.req('GET', '/api/rankings?month=' + mon); ok(rk.lists.coordinator[0].id === last.id && rk.lists.coordinator[0].manual && rk.lists.coordinator.length === 5, 'manual rank');
+    // undo settlement
+    const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
+    await admin.req('DELETE', '/api/settlements/' + st1.id);
+    ok((await admin.req('GET', '/api/finance/' + d.id)).net === 180 + 250, 'settlement undone (+ exempt lecture 250)');
+    // reset everything
+    await admin.req('POST', '/api/reset', { confirm: 'غلط' }).then(() => ok(false), e => ok(e.status === 400, 'reset needs phrase'));
+    await admin.req('POST', '/api/reset', { confirm: 'امسح كل حاجة', doctors: true });
+    ok((await admin.req('GET', '/api/lectures')).length === 0 && (await admin.req('GET', '/api/tickets')).length === 0 && (await admin.req('GET', '/api/doctors')).length === 0, 'reset');
+    ok((await admin.req('GET', '/api/batches')).length === 19, 'structure kept');
     // static
     const html = await fetch(`http://127.0.0.1:${PORT}/`).then(r => r.text()); ok(html.includes('app.js'), 'static');
     console.log(`\n✓ ${pass} اختبار نجحوا`);

@@ -56,21 +56,22 @@ const uploadLate = l => { const d = l.video_ok_at && l.q_ok_at ? Math.max(l.vide
 function decorate(l) {
   const b = one('SELECT b.code, b.year, u.name uni FROM batches b JOIN universities u ON u.id=b.university_id WHERE b.id=?', l.batch_id) || {};
   const d = one('SELECT name FROM users WHERE id=?', l.doctor_id) || {}, c = one('SELECT name FROM users WHERE id=?', l.coordinator_id) || {};
+  const qs = l.no_q ? 'na' : fileState(l.q_at, l.q_ok_at, l.sent_at);
   return { ...l, batch_code: b.code, batch_year: b.year, university: b.uni, doctor: d.name, coordinator: c.name, state: lectureState(l),
-    v_state: fileState(l.video_at, l.video_ok_at, l.sent_at), q_state: fileState(l.q_at, l.q_ok_at, l.sent_at),
+    v_state: fileState(l.video_at, l.video_ok_at, l.sent_at), q_state: qs,
     v_late: isLate(l.video_at, l.sent_at), q_late: isLate(l.q_at, l.sent_at), upload_late: uploadLate(l), deadline_at: l.sent_at + deadline() };
 }
 
 /* ---------- doctors ---------- */
-function doctorStats(id) {
-  const ls = all('SELECT * FROM lectures WHERE doctor_id=?', id);
+function doctorStats(id, w) {
+  const ls = w ? all('SELECT * FROM lectures WHERE doctor_id=? AND sent_at>=? AND sent_at<?', id, w.from, w.to) : all('SELECT * FROM lectures WHERE doctor_id=?', id);
   const doc = one('SELECT * FROM doctors WHERE user_id=?', id) || { capacity: 3, adj: 0 };
   let due = 0, onTime = 0, lateEver = 0, lateNow = 0, deliveredN = 0; const vT = [], qT = [];
   const t0 = dayStart(), m0 = now() - 30 * DAY; let today = 0, month = 0;
   for (const l of ls) {
     for (const [at, arr] of [[l.video_at, vT], [l.q_at, qT]]) {
       if (fileState(at, 1, l.sent_at) !== 'pending') { due++; if (!isLate(at, l.sent_at)) onTime++; }
-      if (at) arr.push(at - l.sent_at);
+      if (at && !(l.no_q && arr === qT)) arr.push(at - l.sent_at);
     }
     if (isLate(l.video_at, l.sent_at) || isLate(l.q_at, l.sent_at)) lateEver++;
     if (lectureState(l) === 'late') lateNow++;
@@ -95,45 +96,53 @@ function doctorStats(id) {
 
 /* ---------- subscriptions ---------- */
 const latestSubs = bid => all('SELECT count, day FROM subs WHERE batch_id=? ORDER BY day DESC, id DESC LIMIT 2', bid);
-function subsRatio(bids) {
+function subsRatio(bids, upto) {
   const rs = [];
-  for (const id of bids) { const b = one('SELECT expected_subs FROM batches WHERE id=?', id); const s = latestSubs(id)[0]; if (b && b.expected_subs > 0 && s) rs.push(clamp(s.count / b.expected_subs, 0, 1)); }
+  for (const id of bids) { const b = one('SELECT expected_subs FROM batches WHERE id=?', id); const s = upto ? one('SELECT count FROM subs WHERE batch_id=? AND day<=? ORDER BY day DESC, id DESC LIMIT 1', id, upto) : latestSubs(id)[0]; if (b && b.expected_subs > 0 && s) rs.push(clamp(s.count / b.expected_subs, 0, 1)); }
   return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 1;
 }
 
 /* ---------- team ratings ---------- */
-function coordinatorStats(id) {
-  const bids = all('SELECT id FROM batches WHERE coordinator_id=?', id).map(r => r.id), m0 = now() - 30 * DAY;
-  const tk = all(`SELECT * FROM tickets WHERE batch_id IN (${inList(bids)}) AND created_at>=?`, m0);
+const defWin = () => ({ from: now() - 30 * DAY, to: now() + 1 });
+const winDays = w => Math.max(1, Math.ceil((Math.min(w.to, now()) - w.from) / DAY));
+function coordinatorStats(id, w = defWin()) {
+  const bids = all('SELECT id FROM batches WHERE coordinator_id=?', id).map(r => r.id);
+  const tk = all(`SELECT * FROM tickets WHERE batch_id IN (${inList(bids)}) AND created_at>=? AND created_at<?`, w.from, w.to);
   const lim = num('coord_reply_minutes') * 60e3;
   const rep = tk.filter(t => t.reply_at), repOk = rep.filter(t => (t.returned_at || now()) - t.reply_at <= lim);
-  const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=?`, m0).filter(l => l.video_ok_at && l.q_ok_at);
+  const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=? AND sent_at<?`, w.from, w.to).filter(l => l.video_ok_at && l.q_ok_at);
   const upOk = ls.filter(l => !uploadLate(l));
   const probs = tk.filter(t => t.kind === 'problem'), probsClosed = probs.filter(t => t.closed_at);
-  const days = 7, items = Object.keys(DAILY).length * days;
-  const done = (one(`SELECT COUNT(*) n FROM checklist WHERE user_id=? AND done=1 AND period>=? AND period NOT LIKE 'W%'`, id, dayStr(now() - (days - 1) * DAY)) || {}).n;
-  const s = { subs: 30 * subsRatio(bids), deadlines: 30 * ratio(repOk.length + upOk.length, rep.length + ls.length), problems: 20 * ratio(probsClosed.length, probs.length), checklist: 20 * clamp(done / items, 0, 1) };
+  const days = Math.min(winDays(w), 31), items = Object.keys(DAILY).length * days;
+  const done = (one(`SELECT COUNT(*) n FROM checklist WHERE user_id=? AND done=1 AND period>=? AND period<=? AND period NOT LIKE 'W%'`, id, dayStr(w.from), dayStr(Math.min(w.to - 1, now()))) || {}).n;
+  const s = { subs: 30 * subsRatio(bids, dayStr(Math.min(w.to - 1, now()))), deadlines: 30 * ratio(repOk.length + upOk.length, rep.length + ls.length), problems: 20 * ratio(probsClosed.length, probs.length), checklist: 20 * clamp(done / items, 0, 1) };
   s.total = Math.round(s.subs + s.deadlines + s.problems + s.checklist);
   return { batches: bids.length, replyLate: rep.length - repOk.length, uploadLate: ls.length - upOk.length, openProblems: probs.length - probsClosed.length, score: s };
 }
-function supervisorStats(id) {
-  const bids = all('SELECT id FROM batches WHERE supervisor_id=?', id).map(r => r.id), m0 = now() - 30 * DAY;
-  const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=?`, m0);
+function supervisorStats(id, w = defWin()) {
+  const bids = all('SELECT id FROM batches WHERE supervisor_id=?', id).map(r => r.id);
+  const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=? AND sent_at<?`, w.from, w.to);
   let due = 0, ok = 0; for (const l of ls) for (const at of [l.video_at, l.q_at]) if (fileState(at, 1, l.sent_at) !== 'pending') { due++; if (!isLate(at, l.sent_at)) ok++; }
   const appr = ls.filter(l => l.video_ok_at && l.q_ok_at); const up = appr.filter(l => !uploadLate(l));
-  const probs = all(`SELECT * FROM tickets WHERE kind='problem' AND batch_id IN (${inList(bids)}) AND created_at>=?`, m0);
+  const probs = all(`SELECT * FROM tickets WHERE kind='problem' AND batch_id IN (${inList(bids)}) AND created_at>=? AND created_at<?`, w.from, w.to);
   const open = probs.filter(p => !p.closed_at).length;
-  const reps = (one('SELECT COUNT(*) n FROM reports WHERE user_id=? AND day>=?', id, dayStr(now() - 6 * DAY)) || {}).n;
-  const s = { subs: 40 * subsRatio(bids), delays: 30 * ratio(ok + up.length, due + appr.length), problems: 20 * (1 - ratio(open, probs.length, 0)), reports: 10 * clamp(reps / 7, 0, 1) };
+  const days = Math.min(winDays(w), 31);
+  const reps = (one('SELECT COUNT(*) n FROM reports WHERE user_id=? AND day>=? AND day<=?', id, dayStr(w.from), dayStr(Math.min(w.to - 1, now()))) || {}).n;
+  const s = { subs: 40 * subsRatio(bids, dayStr(Math.min(w.to - 1, now()))), delays: 30 * ratio(ok + up.length, due + appr.length), problems: 20 * (1 - ratio(open, probs.length, 0)), reports: 10 * clamp(reps / days, 0, 1) };
   s.total = Math.round(s.subs + s.delays + s.problems + s.reports);
   return { batches: bids.length, openProblems: open, lateNow: ls.filter(l => lectureState(l) === 'late').length, score: s };
 }
-function csStats(id) {
-  const lim = num('cs_reply_minutes') * 60e3, m0 = now() - 30 * DAY;
-  const tk = all('SELECT * FROM tickets WHERE returned_at IS NOT NULL AND returned_at>=?', m0);
+function csStats(id, w = defWin()) {
+  const lim = num('cs_reply_minutes') * 60e3;
+  const tk = all('SELECT * FROM tickets WHERE returned_at IS NOT NULL AND returned_at>=? AND returned_at<?', w.from, w.to);
   const mine = tk.filter(t => t.delivered_by === id || (!t.delivered_by && t.created_by === id));
   const ok = mine.filter(t => t.delivered_at && t.delivered_at - t.returned_at <= lim);
-  return { handled: mine.length, late: mine.length - ok.length, created: (one('SELECT COUNT(*) n FROM tickets WHERE created_by=? AND created_at>=?', id, m0) || {}).n, score: Math.round(100 * ratio(ok.length, mine.length)) };
+  return { handled: mine.length, late: mine.length - ok.length, created: (one('SELECT COUNT(*) n FROM tickets WHERE created_by=? AND created_at>=? AND created_at<?', id, w.from, w.to) || {}).n, score: Math.round(100 * ratio(ok.length, mine.length)) };
+}
+function monthWin(m) { // 'YYYY-MM'
+  const [y, mo] = m.split('-').map(Number); const nx = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`;
+  const from = Date.parse(`${m}-01T00:00:00${tzOffset(Date.parse(m + '-15T12:00:00Z'))}`), to = Date.parse(`${nx}-01T00:00:00${tzOffset(Date.parse(nx + '-15T12:00:00Z'))}`);
+  return { from, to };
 }
 
 /* ---------- finance ---------- */
@@ -157,7 +166,7 @@ function daySummary(u, t = now()) {
   const ids = batchIds(u), tk = all(`SELECT * FROM tickets WHERE ${ids ? `batch_id IN (${inList(ids)})` : '1=1'}`);
   const lim = num('coord_reply_minutes') * 60e3, csLim = num('cs_reply_minutes') * 60e3;
   return {
-    sent: ls.filter(l => inDay(l.sent_at)).length, videos: ls.filter(l => inDay(l.video_at)).length, qfiles: ls.filter(l => inDay(l.q_at)).length,
+    sent: ls.filter(l => inDay(l.sent_at)).length, videos: ls.filter(l => inDay(l.video_at)).length, qfiles: ls.filter(l => inDay(l.q_at) && !l.no_q).length,
     uploaded: ls.filter(l => inDay(l.uploaded_at)).length, lateNow: ls.filter(l => lectureState(l) === 'late').length,
     progress: ls.filter(l => lectureState(l) === 'progress').length, toUpload: ls.filter(l => lectureState(l) === 'upload').length,
     questions: tk.filter(x => x.kind === 'question' && inDay(x.created_at)).length,
@@ -175,7 +184,7 @@ function batchRows(u) {
       const days = b.exam_date ? Math.ceil((Date.parse(b.exam_date + 'T00:00:00Z') - Date.parse(dayStr() + 'T00:00:00Z')) / DAY) : null;
       const revisions = ls.filter(l => l.type === 'revision' && delivered(l)).length;
       return { ...b, subs: sb[0]?.count ?? null, subs_prev: sb[1]?.count ?? null, subs_day: sb[0]?.day ?? null, lectures: ls.filter(l => delivered(l) && l.type !== 'revision').length,
-        revisions, qfiles: ls.filter(l => l.q_at).length, lateNow: ls.filter(l => lectureState(l) === 'late').length,
+        revisions, qfiles: ls.filter(l => l.q_at && !l.no_q).length, lateNow: ls.filter(l => lectureState(l) === 'late').length,
         problems: (one("SELECT COUNT(*) n FROM tickets WHERE kind='problem' AND batch_id=? AND closed_at IS NULL", b.id) || {}).n,
         exam_days: days, exam_alert: days != null && days >= 0 && days <= num('exam_alert_days') && revisions === 0 };
     });
@@ -227,5 +236,5 @@ function coordinatorReport(id, day = dayStr()) {
   return { day, items: [...Object.entries(DAILY), ...Object.entries(WEEKLY)].map(([k, label]) => ({ key: k, label, weekly: !!WEEKLY[k], done: !!map[k]?.done, note: map[k]?.note || '' })), summary: daySummary({ role: 'coordinator', id }, Date.parse(day + 'T12:00:00Z')) };
 }
 
-module.exports = { H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
+module.exports = { monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
   doctorStats, coordinatorStats, supervisorStats, csStats, payable, daySummary, batchRows, alerts, aiPrompt, coordinatorReport, fmtDur, latestSubs };

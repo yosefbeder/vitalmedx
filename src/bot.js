@@ -32,7 +32,7 @@ async function sendFile(method, field, chat_id, buf, filename, caption, mime) {
 const send = (chat_id, text, extra = {}) => (chat_id ? call('sendMessage', { chat_id, text, ...extra }) : null);
 
 function lectureText(l, title = 'محاضرة جديدة') {
-  return `${title} #${l.id}\n${l.name}\nالنوع: ${L.TYPES[l.type]}\nالسعر: ${money(l.price)}\nآخر موعد للفيديو وملف الأسئلة: ${fmt(l.sent_at + L.deadline())}`;
+  return `${title} #${l.id}\n${l.name}\nالنوع: ${L.TYPES[l.type]}\nالسعر: ${money(l.price)}\n${l.no_q ? 'المطلوب: فيديو الشرح بس (مفيش ملف أسئلة)' : 'المطلوب: فيديو الشرح + ملف الأسئلة'}\nآخر موعد: ${fmt(l.sent_at + L.deadline())}`;
 }
 async function sendLecture(l, files = []) {
   const d = one('SELECT tg_id FROM users WHERE id=?', l.doctor_id);
