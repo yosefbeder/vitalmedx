@@ -65,7 +65,7 @@ async function boot() {
   document.querySelectorAll('.brandname').forEach(b => (b.textContent = ME.brand)); document.title = ME.brand;
   $('#login').hidden = true; $('#app').hidden = false;
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]}</small>`;
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.3.0</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });

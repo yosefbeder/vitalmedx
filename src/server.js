@@ -8,6 +8,7 @@ const L = require('./logic');
 const bot = require('./bot');
 const jobs = require('./jobs');
 
+const VERSION = '1.3.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -477,7 +478,7 @@ function serveStatic(req, res, pathname) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x'); const pathname = url.pathname;
   try {
-    if (req.method === 'GET' && pathname === '/healthz') return send(res, 200, { ok: true });
+    if (req.method === 'GET' && pathname === '/healthz') return send(res, 200, { ok: true, version: VERSION });
     if (pathname.startsWith('/tg/')) {
       if (!WEBHOOK || pathname !== '/tg/' + WEBHOOK || req.headers['x-telegram-bot-api-secret-token'] !== WEBHOOK) return send(res, 404, 'not found');
       const upd = JSON.parse((await readBody(req)).toString('utf8') || '{}');
