@@ -1,0 +1,14 @@
+{
+  "name": "vitalmedx",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VitalMedX – نظام متابعة الفريق والدكاترة مع بوت تليجرام",
+  "main": "src/server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "seed": "node --no-warnings scripts/seed.js",
+    "set-webhook": "node --no-warnings scripts/set-webhook.js",
+    "test": "node --no-warnings test/e2e.js"
+  }
+}

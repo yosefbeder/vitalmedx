@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    container_name: vitalmedx
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:3100:3000"   # Nginx بيوصل له من جوه السيرفر بس
+    volumes:
+      - vmx-data:/app/data      # قاعدة البيانات والنسخ الاحتياطية
+volumes:
+  vmx-data:
