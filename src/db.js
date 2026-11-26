@@ -73,14 +73,30 @@ for (const [c, d] of [['needs_confirm', 'INTEGER NOT NULL DEFAULT 0'], ['confirm
 if (addCol('lectures', 'late_alerted', 'INTEGER NOT NULL DEFAULT 0')) db.exec('UPDATE lectures SET late_alerted=overdue_notified'); // don't re-alert old lates after upgrade
 addCol('audit', 'as_admin', 'INTEGER');
 db.exec('CREATE INDEX IF NOT EXISTS audit_at ON audit(at)');
+// v1.7: lecture kind, ticket priority/deadline, who-did-it, alerts log, password reset
+for (const [c, d] of [['kind', "TEXT NOT NULL DEFAULT 'new'"], ['ok_by', 'INTEGER'], ['uploaded_by', 'INTEGER']]) if (addCol('lectures', c, d) && c === 'kind') db.exec("UPDATE lectures SET kind='repeat', type='theory' WHERE type='repeat'");
+for (const [c, d] of [['priority', 'INTEGER NOT NULL DEFAULT 1'], ['due_at', 'INTEGER'], ['sent_by', 'INTEGER'], ['closed_by', 'INTEGER'], ['direct', 'INTEGER NOT NULL DEFAULT 0'], ['reply_path', 'TEXT'], ['reply_mime', 'TEXT'], ['reply_name', 'TEXT']]) addCol('tickets', c, d);
+for (const [c, d] of [['doctor_id', 'INTEGER'], ['student', 'TEXT'], ['priority', 'INTEGER'], ['stage', 'TEXT']]) addCol('bot_drafts', c, d);
+db.exec('CREATE TABLE IF NOT EXISTS reset_codes(user_id INTEGER PRIMARY KEY, code TEXT NOT NULL, exp INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL)');
+if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='alert_log'").get()) {
+  db.exec('CREATE TABLE alert_log(key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+  // lectures already alerted as late before the upgrade: mark today's daily alert as sent (no burst on upgrade)
+  const dl = Number((db.prepare("SELECT value FROM settings WHERE key='deadline_hours'").get() || {}).value || 24) * 3600e3, n = Date.now();
+  for (const l of db.prepare('SELECT id, sent_at FROM lectures WHERE late_alerted=1 AND (video_at IS NULL OR q_at IS NULL)').all()) {
+    const day = Math.floor((n - l.sent_at - dl) / 864e5) + 1; for (let d = 1; d <= day; d++) db.prepare('INSERT OR IGNORE INTO alert_log(key,at) VALUES(?,?)').run(`late:${l.id}:${d}`, n);
+  }
+}
 db.exec('CREATE TABLE IF NOT EXISTS doctor_notes(id INTEGER PRIMARY KEY, doctor_id INTEGER NOT NULL, by INTEGER NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL)');
 db.exec('CREATE TABLE IF NOT EXISTS rank_overrides(month TEXT NOT NULL, role TEXT NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, by INTEGER, at INTEGER, PRIMARY KEY(month, role, user_id))');
 
 const DEFAULTS = {
   deadline_hours: '24', remind_hours: '6', upload_minutes: '30', coord_reply_minutes: '60', cs_reply_minutes: '30',
   exam_alert_days: '10', report_time: '23:00', backup_time: '03:00', repeat_ratio: '0.5', brand: 'VitalMedX',
+  // alerts: comma-separated lists the admin edits from Settings → التنبيهات
+  remind_before_hours: '', upload_alert_minutes: '30,60', send_alert_minutes: '60', return_alert_minutes: '60,120', deliver_alert_minutes: '30,60', due_alert_minutes: '30', sup_grace_minutes: '30',
 };
 for (const [k, v] of Object.entries(DEFAULTS)) db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(k, v);
+if (!(db.prepare("SELECT value FROM settings WHERE key='remind_before_hours'").get() || {}).value) db.prepare("UPDATE settings SET value=? WHERE key='remind_before_hours'").run(String((db.prepare("SELECT value FROM settings WHERE key='remind_hours'").get() || {}).value || '6') + ',1');
 
 const one = (sql, ...a) => db.prepare(sql).get(...a);
 const all = (sql, ...a) => db.prepare(sql).all(...a);

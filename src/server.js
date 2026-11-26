@@ -11,7 +11,7 @@ const PDF = require('./pdf');
 const { DATA_DIR } = require('./db');
 const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -25,10 +25,15 @@ const real = v => (v === '' || v == null ? null : Number(v));
 const str = (v, max = 4000) => (v == null ? null : String(v).trim().slice(0, max));
 const req1 = (v, name) => { if (v == null || v === '' || Number.isNaN(v)) fail(400, `${name} مطلوب`); return v; };
 
+const canTicket = (u, t) => canBatch(u, t.batch_id) || (u.role === 'doctor' && t.doctor_id === u.id && !!t.sent_doctor_at);
+const PRI = v => Math.max(0, Math.min(3, int(v) ?? 1));
+function dueFrom(body) { // hours (number) or custom hours; '' / 0 = no deadline
+  const h = real(body.due_hours); return h && h > 0 ? Date.now() + Math.min(h, 24 * 30) * 3600e3 : null;
+}
 function canBatch(u, bid) { const ids = L.batchIds(u); return u.role !== 'doctor' && (!ids || ids.includes(Number(bid))); }
 function sanitizeLecture(l, u) {
   const d = L.decorate(l);
-  if (u.role === 'doctor') { delete d.batch_code; delete d.batch_year; delete d.university; delete d.coordinator; delete d.batch_id; delete d.coordinator_id; delete d.lec_file; delete d.src_q_file; delete d.video_file; delete d.q_file; delete d.priority; delete d.excuse_note; }
+  if (u.role === 'doctor') { delete d.batch_code; delete d.batch_year; delete d.university; delete d.coordinator; delete d.batch_id; delete d.coordinator_id; delete d.lec_file; delete d.src_q_file; delete d.video_file; delete d.q_file; delete d.priority; delete d.excuse_note; delete d.ok_by_name; delete d.uploaded_by_name; }
   return d;
 }
 
@@ -40,6 +45,24 @@ route('POST', '/api/login', async ({ body, res }) => {
   const u = one('SELECT * FROM users WHERE lower(email)=lower(?) AND active=1', str(body.email) || '');
   if (!u || !A.verify(body.pass || '', u.pass)) fail(401, 'الإيميل أو كلمة المرور غلط');
   res.setHeader('Set-Cookie', A.makeCookie(u.id)); audit(u.id, 'login');
+  return { ok: true };
+}, { public: true, noAudit: true });
+route('POST', '/api/forgot', async ({ body }) => {
+  const u = one('SELECT id, name, tg_id FROM users WHERE lower(email)=lower(?) AND active=1', str(body.email, 200) || '');
+  const msg = { ok: true, message: 'لو الإيميل ده متسجل وحسابه مربوط بالبوت، الكود وصله على تليجرام. لو حسابك مش مربوط بالبوت كلّم الأدمن يعملك كلمة سر جديدة.' };
+  if (!u || !u.tg_id) return msg;
+  const old = one('SELECT sent_at FROM reset_codes WHERE user_id=?', u.id); if (old && Date.now() - old.sent_at < 60e3) return msg;
+  const code = String(require('node:crypto').randomInt(0, 1e6)).padStart(6, '0');
+  run('INSERT INTO reset_codes(user_id,code,exp,tries,sent_at) VALUES(?,?,?,0,?) ON CONFLICT(user_id) DO UPDATE SET code=excluded.code, exp=excluded.exp, tries=0, sent_at=excluded.sent_at', u.id, A.hash(code), Date.now() + 15 * 60e3, Date.now());
+  await bot.send(u.tg_id, `🔐 كود تغيير كلمة السر: ${code}\nصالح 15 دقيقة.\nلو مش انت اللي طلبته، تجاهل الرسالة دي.`); audit(u.id, 'reset_request');
+  return msg;
+}, { public: true, noAudit: true });
+route('POST', '/api/forgot/reset', async ({ body }) => {
+  const u = one('SELECT id FROM users WHERE lower(email)=lower(?) AND active=1', str(body.email, 200) || ''), bad = () => fail(400, 'الكود غلط أو خلص، اطلب كود جديد');
+  const rc = u && one('SELECT * FROM reset_codes WHERE user_id=?', u.id); if (!rc || rc.exp < Date.now() || rc.tries >= 5) bad();
+  if (!A.verify(String(body.code || '').trim(), rc.code)) { run('UPDATE reset_codes SET tries=tries+1 WHERE user_id=?', u.id); bad(); }
+  const pass = String(body.pass || ''); if (pass.length < 8) fail(400, 'كلمة السر لازم 8 حروف على الأقل');
+  run('UPDATE users SET pass=? WHERE id=?', A.hash(pass), u.id); run('DELETE FROM reset_codes WHERE user_id=?', u.id); audit(u.id, 'password_reset');
   return { ok: true };
 }, { public: true, noAudit: true });
 route('POST', '/api/logout', async ({ res }) => { res.setHeader('Set-Cookie', [A.clearCookie(), A.clearImp()]); return { ok: true }; }, { public: true, noAudit: true });
@@ -58,7 +81,7 @@ route('GET', '/api/me', async ({ u, req }) => {
   const x = one('SELECT id,name,email,role,tg_id,link_code,tg_username,whatsapp FROM users WHERE id=?', u.id);
   const imp = x.role !== 'admin' ? A.impFromReq(req) : null;
   return { ...x, impersonated_by: imp ? imp.name : null, linked: !!x.tg_id, brand: setting('brand'), types: L.TYPES, daily: L.DAILY, weekly: L.WEEKLY,
-    settings: { deadline_hours: setting('deadline_hours'), upload_minutes: setting('upload_minutes'), coord_reply_minutes: setting('coord_reply_minutes'), cs_reply_minutes: setting('cs_reply_minutes'), repeat_ratio: setting('repeat_ratio') }, today: L.dayStr(), week: L.weekStr() };
+    settings: { deadline_hours: setting('deadline_hours'), upload_minutes: setting('upload_minutes'), coord_reply_minutes: setting('coord_reply_minutes'), cs_reply_minutes: setting('cs_reply_minutes'), sup_grace_minutes: setting('sup_grace_minutes') }, kinds: L.KINDS, today: L.dayStr(), week: L.weekStr() };
 });
 route('POST', '/api/me/password', async ({ u, body }) => {
   const x = one('SELECT pass FROM users WHERE id=?', u.id);
@@ -238,12 +261,12 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
   const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'الدفعة دي مش بتاعتك');
   const did = req1(int(body.doctor_id), 'الدكتور'); const doc = one("SELECT u.*, d.* FROM users u JOIN doctors d ON d.user_id=u.id WHERE u.id=? AND u.active=1", did) || fail(400, 'الدكتور مش موجود');
   const type = body.type in L.TYPES ? body.type : fail(400, 'النوع غلط');
+  const kind = body.kind in L.KINDS ? body.kind : 'new';
   const name = req1(str(body.name, 200), 'اسم المحاضرة');
-  const dflt = type === 'repeat' ? doc.price_theory * Number(setting('repeat_ratio')) : doc[`price_${type}`];
-  const price = real(body.price) ?? dflt;
+  const price = kind === 'repeat' ? (real(body.price) ?? fail(400, 'اكتب سعر المحاضرة المعادة بإيدك')) : (real(body.price) ?? doc[`price_${type}`]);
   const coord = u.role === 'coordinator' ? u.id : (one('SELECT coordinator_id FROM batches WHERE id=?', bid) || {}).coordinator_id || u.id;
   const noq = body.no_q === true || body.no_q === '1' || body.no_q === 'on', t0 = Date.now(), pr = Math.max(0, Math.min(3, int(body.priority) ?? 1));
-  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,name,price,sent_at,no_q,q_at,q_ok_at,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null, pr);
+  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,kind,name,price,sent_at,no_q,q_at,q_ok_at,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, kind, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null, pr);
   const l = one('SELECT * FROM lectures WHERE id=?', Number(r.lastInsertRowid));
   const fl = [];
   if (files.lec) fl.push({ ...files.lec, field: 'lec_file', label: 'ملف المحاضرة' });
@@ -254,19 +277,19 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
 });
 route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
   const l = one('SELECT * FROM lectures WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  const supOk = ['priority', 'excuse', 'unexcuse'].includes(body.action);
+  const supOk = ['priority', 'excuse', 'unexcuse', 'approve', 'uploaded', 'forward', 'exempt_q', 'rate'].includes(body.action);
   if (!canBatch(u, l.batch_id) || !(['admin', 'coordinator'].includes(u.role) || (supOk && u.role === 'supervisor'))) fail(403, 'مش مسموح');
   if ((body.action === 'excuse' || body.action === 'unexcuse') && !['admin', 'supervisor'].includes(u.role)) fail(403, 'استثناء التأخير للمشرف والأدمن بس');
   const t = Date.now();
   switch (body.action) {
     case 'approve':
-      if (body.video && l.video_at && !l.video_ok_at) run('UPDATE lectures SET video_ok_at=? WHERE id=?', t, l.id);
-      if (body.q && l.q_at && !l.q_ok_at) run('UPDATE lectures SET q_ok_at=? WHERE id=?', t, l.id);
+      if (body.video && l.video_at && !l.video_ok_at) run('UPDATE lectures SET video_ok_at=?, ok_by=? WHERE id=?', t, u.id, l.id);
+      if (body.q && l.q_at && !l.q_ok_at) run('UPDATE lectures SET q_ok_at=?, ok_by=? WHERE id=?', t, u.id, l.id);
       break;
     case 'rate': {
       const c = (v, m) => Math.max(0, Math.min(m, Number(v) || 0));
       run('UPDATE lectures SET r_video=?, r_q=?, r_instr=?, r_comm=? WHERE id=?', c(body.r_video, 40), c(body.r_q, 10), c(body.r_instr, 10), c(body.r_comm, 5), l.id); break; }
-    case 'uploaded': if (!(l.video_ok_at && l.q_ok_at)) fail(400, 'لازم الفيديو والأسئلة يتعتمدوا الأول'); run('UPDATE lectures SET uploaded_at=? WHERE id=?', t, l.id); break;
+    case 'uploaded': if (!(l.video_ok_at && l.q_ok_at)) fail(400, 'لازم الفيديو والأسئلة يتعتمدوا الأول'); run('UPDATE lectures SET uploaded_at=?, uploaded_by=? WHERE id=?', t, u.id, l.id); break;
     case 'price': {
       if (l.settlement_id) fail(400, 'المحاضرة دي اتحاسبت خلاص');
       const np = real(body.price); if (np == null || np < 0) fail(400, 'السعر غلط');
@@ -296,7 +319,10 @@ route('GET', '/api/tickets', async ({ u, q }) => {
   let ts = all(`SELECT t.*, b.code batch_code, d.name doctor, l.name lecture, c.name created_by_name FROM tickets t JOIN batches b ON b.id=t.batch_id LEFT JOIN users d ON d.id=t.doctor_id LEFT JOIN lectures l ON l.id=t.lecture_id LEFT JOIN users c ON c.id=t.created_by
     WHERE ${ids ? `t.batch_id IN (${L.inList(ids)})` : '1=1'} ${q.open === '1' ? 'AND t.closed_at IS NULL' : ''} ORDER BY t.closed_at IS NOT NULL, t.created_at DESC LIMIT 400`);
   const lim = Number(setting('coord_reply_minutes')) * 60e3, cl = Number(setting('cs_reply_minutes')) * 60e3, n = Date.now();
-  return ts.map(({ att_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
+  const g = L.supGrace(), nm = Object.fromEntries(all('SELECT id, name, role FROM users').map(x => [x.id, x]));
+  ts.sort((a, b) => (!!a.closed_at - !!b.closed_at) || (a.closed_at ? b.created_at - a.created_at : (b.priority - a.priority) || ((a.due_at || 9e15) - (b.due_at || 9e15)) || b.created_at - a.created_at));
+  return ts.map(({ att_path, reply_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), has_reply_file: !!(reply_path || t.reply_file_id), holder: L.ticketHolder(t), due_late: !!(t.due_at && !t.closed_at && n > t.due_at),
+    by: { sent: nm[t.sent_by], returned: nm[t.returned_by], closed: nm[t.closed_by] }, both_late: L.returnLate(t, g), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
 route('POST', '/api/tickets', async ({ u, body, files }) => {
@@ -304,42 +330,64 @@ route('POST', '/api/tickets', async ({ u, body, files }) => {
   const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'مش مسموح');
   const kind = body.kind === 'problem' ? 'problem' : 'question';
   const lid = int(body.lecture_id); const lec = lid ? one('SELECT * FROM lectures WHERE id=? AND batch_id=?', lid, bid) : null;
+  // general question: straight to a doctor, no lecture
+  const gdoc = !lec && kind === 'question' && int(body.doctor_id) ? one("SELECT id, name FROM users WHERE id=? AND role='doctor' AND active=1", int(body.doctor_id)) || fail(400, 'الدكتور مش موجود') : null;
   const att = files.att; const text = str(body.body) || (att ? (/^audio|ogg|opus/.test(att.mime || '') ? '[سؤال صوتي]' : '[سؤال مرفق]') : null);
-  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : null, req1(text, 'النص أو الريكورد'), str(body.student, 200), u.id, Date.now());
+  const n0 = Date.now();
+  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at,priority,due_at,direct,sent_doctor_at,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : gdoc ? gdoc.id : null,
+    req1(text, 'النص أو الريكورد'), str(body.student, 200), u.id, n0, PRI(body.priority), dueFrom(body), gdoc ? 1 : 0, gdoc ? n0 : null, gdoc ? u.id : null);
   const id = Number(r.lastInsertRowid);
-  setImmediate(() => bot.notifyCoordNew(one('SELECT * FROM tickets WHERE id=?', id)).catch(e => console.error(e)));
   if (att) { const f = path.join(ATT, `${id}-${att.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(f, att.buf); run('UPDATE tickets SET att_path=?, att_name=?, att_mime=? WHERE id=?', f, att.name, att.mime || 'application/octet-stream', id); }
-  return { id };
+  let delivered = null;
+  if (gdoc) { delivered = await bot.sendTicket(one('SELECT * FROM tickets WHERE id=?', id)); setImmediate(() => bot.notifyCoordDirect(one('SELECT * FROM tickets WHERE id=?', id)).catch(e => console.error(e))); }
+  else setImmediate(() => bot.notifyCoordNew(one('SELECT * FROM tickets WHERE id=?', id)).catch(e => console.error(e)));
+  return { id, direct: !!gdoc, delivered_to_bot: delivered };
 });
 route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
   if (!canBatch(u, t.batch_id)) fail(403, 'مش مسموح');
-  const n = Date.now(), coordOk = ['admin', 'coordinator'].includes(u.role), csOk = ['admin', 'cs'].includes(u.role);
+  const n = Date.now(), coordOk = ['admin', 'coordinator', 'supervisor'].includes(u.role), csOk = ['admin', 'cs'].includes(u.role);
   switch (body.action) {
     case 'send_doctor': {
-      if (!coordOk || t.kind !== 'question') fail(403, 'مش مسموح');
+      if (!coordOk) fail(403, 'مش مسموح');
       const did = int(body.doctor_id) || t.doctor_id; if (!did) fail(400, 'اختار الدكتور');
-      run('UPDATE tickets SET doctor_id=?, lecture_id=COALESCE(?,lecture_id), sent_doctor_at=? WHERE id=?', did, int(body.lecture_id), n, t.id);
+      run('UPDATE tickets SET doctor_id=?, lecture_id=COALESCE(?,lecture_id), sent_doctor_at=?, sent_by=? WHERE id=?', did, int(body.lecture_id), n, u.id, t.id);
       const ok = await bot.sendTicket(one('SELECT * FROM tickets WHERE id=?', t.id));
       return { ok: true, delivered_to_bot: ok }; }
     case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); break;
     case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); if (!t.returned_at) await bot.notifyCsReturn(one('SELECT * FROM tickets WHERE id=?', t.id)); break;
     case 'deliver': if (!csOk || !t.returned_at) fail(400, 'الرد لسه مارجعش'); run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, u.id, n, t.id); break;
-    case 'delete': need(u, 'admin'); if (t.att_path) fs.rmSync(t.att_path, { force: true }); run('DELETE FROM tickets WHERE id=?', t.id); break;
+    case 'delete': need(u, 'admin'); for (const f of [t.att_path, t.reply_path]) if (f) fs.rmSync(f, { force: true }); run('DELETE FROM tickets WHERE id=?', t.id); break;
+    case 'priority': if (!(coordOk || csOk)) fail(403, 'مش مسموح'); run('UPDATE tickets SET priority=? WHERE id=?', PRI(body.priority), t.id); break;
+    case 'due': if (!(coordOk || csOk)) fail(403, 'مش مسموح'); run('UPDATE tickets SET due_at=? WHERE id=?', dueFrom(body), t.id); break;
     case 'forward': {
       const me = one('SELECT tg_id FROM users WHERE id=?', u.id); if (!me.tg_id) fail(400, 'اربط حسابك بالبوت الأول من صفحة حسابي');
       if (t.reply_file_id) await bot.call({ voice: 'sendVoice', audio: 'sendAudio', photo: 'sendPhoto', video: 'sendVideo', video_note: 'sendVideoNote' }[t.reply_kind] || 'sendDocument', { chat_id: me.tg_id, [t.reply_kind === 'voice' ? 'voice' : t.reply_kind === 'audio' ? 'audio' : t.reply_kind === 'photo' ? 'photo' : t.reply_kind === 'video' ? 'video' : t.reply_kind === 'video_note' ? 'video_note' : 'document']: t.reply_file_id, ...(t.reply_kind === 'video_note' ? {} : { caption: `رد الدكتور على السؤال #${t.id}` }) });
       else fail(400, 'الرد مفيهوش ملف');
       break; }
-    case 'close': if (t.kind !== 'problem' || !(coordOk || csOk)) fail(400, 'مش مسموح'); run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', str(body.resolution), n, t.id); break;
+    case 'close': if (t.kind !== 'problem' || !(coordOk || csOk)) fail(400, 'مش مسموح'); run('UPDATE tickets SET resolution=?, closed_at=?, closed_by=? WHERE id=?', str(body.resolution), n, u.id, t.id); break;
     default: fail(400, 'إجراء غير معروف');
   }
   return { ok: true };
 });
 
+route('GET', '/api/my-questions', async ({ u }) => {
+  need(u, 'doctor');
+  return all("SELECT t.id, t.kind, t.body, t.priority, t.due_at, t.sent_doctor_at, t.reply, t.reply_at, t.reply_kind, t.att_kind, t.att_mime, t.closed_at, (t.att_path IS NOT NULL OR t.att_file_id IS NOT NULL) has_att, (t.reply_path IS NOT NULL OR t.reply_file_id IS NOT NULL) has_reply_file, l.name lecture FROM tickets t LEFT JOIN lectures l ON l.id=t.lecture_id WHERE t.doctor_id=? AND t.sent_doctor_at IS NOT NULL ORDER BY t.reply_at IS NOT NULL, t.priority DESC, t.sent_doctor_at DESC LIMIT 200", u.id)
+    .map(t => ({ ...t, urgent: t.priority >= 2, priority: undefined }));
+});
+route('POST', '/api/my-questions/:id/reply', async ({ u, p, body, files }) => {
+  need(u, 'doctor'); const t = one('SELECT * FROM tickets WHERE id=? AND doctor_id=? AND sent_doctor_at IS NOT NULL', int(p.id), u.id) || fail(404, 'مش موجود');
+  if (t.reply_at) fail(400, 'انت رديت على السؤال ده خلاص');
+  const f = files.file || files.reply, text = str(body.reply, 4000) || (f ? (/^audio|ogg|opus|webm/.test(f.mime || '') ? '[رد صوتي]' : '[رد مرفق]') : null);
+  req1(text, 'الرد أو الريكورد'); let fp = null;
+  if (f) { fp = path.join(ATT, `r${t.id}-${f.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(fp, f.buf); }
+  run('UPDATE tickets SET reply=?, reply_at=?, reply_path=?, reply_mime=?, reply_name=? WHERE id=?', text, Date.now(), fp, f ? f.mime || 'application/octet-stream' : null, f ? f.name : null, t.id);
+  await bot.notifyCoordReply(one('SELECT * FROM tickets WHERE id=?', t.id)); return { ok: true };
+});
 route('GET', '/api/tickets/:id/attachment', async ({ u, p, res }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  if (!canBatch(u, t.batch_id)) fail(404, 'مفيش مرفق');
+  if (!canTicket(u, t)) fail(404, 'مفيش مرفق');
   if (!t.att_path && t.att_file_id) { const url = await bot.getFileUrl(t.att_file_id); if (!url) fail(502, 'تليجرام مارجعش الملف'); const r = await fetch(url); if (!r.ok) fail(502, 'تليجرام مارجعش الملف'); res.writeHead(200, { 'content-type': t.att_mime || 'application/octet-stream', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' }); return res.end(Buffer.from(await r.arrayBuffer())); }
   if (!t.att_path || !fs.existsSync(t.att_path)) fail(404, 'مفيش مرفق');
   res.writeHead(200, { 'content-type': t.att_mime || 'application/octet-stream', 'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(t.att_name || 'file')}`, 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' });
@@ -347,7 +395,8 @@ route('GET', '/api/tickets/:id/attachment', async ({ u, p, res }) => {
 });
 route('GET', '/api/tickets/:id/reply-file', async ({ u, p, res }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  if (!canBatch(u, t.batch_id) || !t.reply_file_id) fail(404, 'مفيش ملف');
+  if (!canTicket(u, t) || !(t.reply_file_id || t.reply_path)) fail(404, 'مفيش ملف');
+  if (t.reply_path && fs.existsSync(t.reply_path)) { res.writeHead(200, { 'content-type': t.reply_mime || 'application/octet-stream', 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' }); return res.end(fs.readFileSync(t.reply_path)); }
   const url = await bot.getFileUrl(t.reply_file_id); if (!url) fail(502, 'تليجرام مارجعش الملف، استخدم زرار ابعتلي على تليجرام');
   const r = await fetch(url); if (!r.ok) fail(502, 'تليجرام مارجعش الملف');
   const types = { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4', video_note: 'video/mp4' };
@@ -636,9 +685,12 @@ route('GET', '/api/audit', async ({ u, q }) => {
   return { rows: out, more: rows.length === 150 ? rows.at(-1).id : null, users: all('SELECT id, name, role FROM users ORDER BY role, name') };
 });
 route('GET', '/api/settings', async ({ u }) => { need(u, 'admin'); return Object.fromEntries(all("SELECT key,value FROM settings WHERE key NOT LIKE 'last_%'").map(r => [r.key, r.value])); });
+const ALERT_KEYS = ['remind_before_hours', 'upload_alert_minutes', 'send_alert_minutes', 'return_alert_minutes', 'deliver_alert_minutes', 'due_alert_minutes', 'sup_grace_minutes'];
 route('PUT', '/api/settings', async ({ u, body }) => {
   need(u, 'admin');
-  for (const k of ['deadline_hours', 'remind_hours', 'upload_minutes', 'coord_reply_minutes', 'cs_reply_minutes', 'exam_alert_days', 'report_time', 'backup_time', 'repeat_ratio', 'brand'])
+  for (const k of ALERT_KEYS) if (k in body) { const v = String(body[k]).trim(); if (v && !/^[\d.]+([,،\s]+[\d.]+)*$/.test(v)) fail(400, 'التنبيهات: اكتب أرقام بينها فاصلة، زي 6, 3, 1'); if (k === 'sup_grace_minutes' && !(Number(v) > 0)) fail(400, 'مهلة المشرف لازم رقم'); }
+  for (const k of ALERT_KEYS) if (k in body && String(body[k]).trim() === '' && k !== 'sup_grace_minutes') run("INSERT INTO settings(key,value) VALUES(?,'0') ON CONFLICT(key) DO UPDATE SET value='0'", k);
+  for (const k of ['deadline_hours', 'upload_minutes', 'coord_reply_minutes', 'cs_reply_minutes', 'exam_alert_days', 'report_time', 'backup_time', 'brand', ...ALERT_KEYS])
     if (k in body && String(body[k]).trim() !== '') run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(body[k]).trim().slice(0, 60));
   return { ok: true };
 });

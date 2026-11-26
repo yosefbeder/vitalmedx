@@ -6,7 +6,7 @@
 <title>VitalMedX</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css?v=1.6.0">
+<link rel="stylesheet" href="/style.css?v=1.7.0">
 </head>
 <body>
 <section class="login" id="login" hidden>
@@ -17,6 +17,19 @@
     <label>كلمة المرور<input name="pass" type="password" dir="ltr" required autocomplete="current-password"></label>
     <p class="err" id="lerr"></p>
     <button class="btn wide">دخول</button>
+    <p style="text-align:center;margin:12px 0 0"><a href="#" id="forgot">نسيت كلمة المرور؟</a></p>
+  </form>
+  <form class="lcard" id="ff" hidden>
+    <h2>نسيت كلمة المرور</h2>
+    <p class="mut" id="fmsg">اكتب إيميلك، وهيوصلك كود على بوت تليجرام (لازم يكون حسابك مربوط بالبوت).</p>
+    <label>الإيميل<input name="email" type="email" dir="ltr" required autocomplete="username"></label>
+    <div id="fstep2" hidden>
+      <label>الكود اللي وصلك على تليجرام<input name="code" inputmode="numeric" dir="ltr" maxlength="6" autocomplete="one-time-code"></label>
+      <label>كلمة السر الجديدة (8 حروف على الأقل)<input name="pass" type="password" dir="ltr" minlength="8" autocomplete="new-password"></label>
+    </div>
+    <p class="err" id="ferr"></p>
+    <button class="btn wide" id="fbtn">ابعتلي الكود</button>
+    <p style="text-align:center;margin:12px 0 0"><a href="#" id="fback">رجوع لتسجيل الدخول</a></p>
   </form>
 </section>
 <div class="app" id="app" hidden>
@@ -32,6 +45,6 @@
 </div>
 <dialog id="dlg"><div id="dlgc"></div></dialog>
 <div class="toast" id="toast" role="status"></div>
-<script src="/app.js?v=1.6.0"></script>
+<script src="/app.js?v=1.7.0"></script>
 </body>
 </html>

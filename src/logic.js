@@ -5,7 +5,11 @@ const H = 3600e3, DAY = 864e5;
 const now = () => Date.now();
 const deadline = () => num('deadline_hours') * H;
 const PRIORITY = { 0: 'غير مهم', 1: 'عادي', 2: 'مهم', 3: 'مهم جداً' };
-const TYPES = { theory: 'نظري', practical: 'عملي', revision: 'مراجعة', repeat: 'معادة' };
+const TYPES = { theory: 'نظري', practical: 'عملي', revision: 'مراجعة' };
+const KINDS = { new: 'محاضرة جديدة', continue: 'استكمال شرح', repeat: 'معادة' };
+const typeLabel = l => `${TYPES[l.type] || l.type}${l.kind && l.kind !== 'new' ? ' · ' + KINDS[l.kind] : ''}`;
+const numList = k => String(setting(k) || '').split(/[,،\s]+/).map(Number).filter(x => x > 0).sort((a, b) => a - b);
+const supGrace = () => num('sup_grace_minutes') * 60e3;
 const DAILY = { new_data: 'الداتا الجديدة اتبعتت للدكاترة', changed: 'المحاضرات المتغيرة اتراجعت واتبعتت', uploaded: 'اللي اتسلم اترفع على Nerdio وقناة تليجرام',
   questions: 'أسئلة الطلبة اتوصّلت وردودها رجعت', post: 'بوست في القناة العامة', remind: 'تذكير الدكاترة بالمحاضرات المتأخرة' };
 const WEEKLY = { feedback: 'فيدباك من أدمن الدفعة عن الشرح', ideas: 'فكرتين لتنشيط الاشتراكات' };
@@ -53,15 +57,26 @@ function lectureState(l) {
   if (!(l.video_ok_at && l.q_ok_at)) return 'review';
   return l.uploaded_at ? 'done' : 'upload';
 }
-const uploadLate = l => { const d = l.video_ok_at && l.q_ok_at ? Math.max(l.video_ok_at, l.q_ok_at) : null; if (!d) return false; const lim = num('upload_minutes') * 60e3; return l.uploaded_at ? l.uploaded_at - d > lim : now() - d > lim; };
+const uploadLate = (l, extra = 0) => { const d = l.video_ok_at && l.q_ok_at ? Math.max(l.video_ok_at, l.q_ok_at) : null; if (!d) return false; const lim = num('upload_minutes') * 60e3 + extra; return l.uploaded_at ? l.uploaded_at - d > lim : now() - d > lim; };
+// coordinator's ticket deadlines: send to doctor (send_alert_minutes[0] or coord limit), return reply (coord_reply_minutes)
+const sendLim = () => (numList('send_alert_minutes')[0] || num('coord_reply_minutes')) * 60e3;
+const returnLate = (t, extra = 0) => !!(t.reply_at && (t.returned_at || now()) - t.reply_at > num('coord_reply_minutes') * 60e3 + extra);
+// who holds a ticket right now
+function ticketHolder(t) {
+  if (t.closed_at) return null;
+  if (t.kind === 'problem') return t.sent_doctor_at && !t.reply_at ? 'doctor' : 'coordinator';
+  if (!t.sent_doctor_at) return 'coordinator'; if (!t.reply_at) return 'doctor'; if (!t.returned_at) return 'coordinator'; return 'cs';
+}
 function decorate(l) {
   const b = one('SELECT b.code, b.year, u.name uni FROM batches b JOIN universities u ON u.id=b.university_id WHERE b.id=?', l.batch_id) || {};
   const d = one('SELECT name FROM users WHERE id=?', l.doctor_id) || {}, c = one('SELECT name FROM users WHERE id=?', l.coordinator_id) || {};
   const qs = l.no_q ? 'na' : fileState(l.q_at, l.q_ok_at, l.sent_at, l.excused);
   return { ...l, batch_code: b.code, batch_year: b.year, university: b.uni, doctor: d.name, coordinator: c.name, state: lectureState(l),
     v_state: fileState(l.video_at, l.video_ok_at, l.sent_at, l.excused), q_state: qs,
-    v_late: isLate(l.video_at, l.sent_at, l.excused), q_late: isLate(l.q_at, l.sent_at, l.excused), upload_late: uploadLate(l), deadline_at: l.sent_at + deadline() };
+    v_late: isLate(l.video_at, l.sent_at, l.excused), q_late: isLate(l.q_at, l.sent_at, l.excused), upload_late: uploadLate(l), upload_both_late: uploadLate(l, supGrace()), deadline_at: l.sent_at + deadline(), type_label: typeLabel(l),
+    ok_by_name: l.ok_by && l.ok_by !== l.coordinator_id ? nameRole(l.ok_by) : null, uploaded_by_name: l.uploaded_by && l.uploaded_by !== l.coordinator_id ? nameRole(l.uploaded_by) : null };
 }
+const nameRole = id => { const x = one('SELECT name, role FROM users WHERE id=?', id); return x ? `${x.name}${x.role === 'supervisor' ? ' (المشرف)' : x.role === 'admin' ? ' (الأدمن)' : ''}` : null; };
 
 /* ---------- doctors ---------- */
 function doctorStats(id, w) {
@@ -124,14 +139,16 @@ function supervisorStats(id, w = defWin()) {
   const bids = all('SELECT id FROM batches WHERE supervisor_id=?', id).map(r => r.id);
   const ls = all(`SELECT * FROM lectures WHERE batch_id IN (${inList(bids)}) AND sent_at>=? AND sent_at<?`, w.from, w.to);
   let due = 0, ok = 0; for (const l of ls) for (const at of [l.video_at, l.q_at]) if (fileState(at, 1, l.sent_at, l.excused) !== 'pending') { due++; if (!isLate(at, l.sent_at, l.excused)) ok++; }
-  const appr = ls.filter(l => l.video_ok_at && l.q_ok_at); const up = appr.filter(l => !uploadLate(l));
+  const appr = ls.filter(l => l.video_ok_at && l.q_ok_at); const up = appr.filter(l => !uploadLate(l, supGrace()));
+  const reps_ = all(`SELECT * FROM tickets WHERE reply_at IS NOT NULL AND batch_id IN (${inList(bids)}) AND created_at>=? AND created_at<?`, w.from, w.to), repOk = reps_.filter(t => !returnLate(t, supGrace()));
+  due += reps_.length; ok += repOk.length;
   const probs = all(`SELECT * FROM tickets WHERE kind='problem' AND batch_id IN (${inList(bids)}) AND created_at>=? AND created_at<?`, w.from, w.to);
   const open = probs.filter(p => !p.closed_at).length;
   const days = Math.min(winDays(w), 31);
   const reps = (one('SELECT COUNT(*) n FROM reports WHERE user_id=? AND day>=? AND day<=?', id, dayStr(w.from), dayStr(Math.min(w.to - 1, now()))) || {}).n;
   const s = { subs: 40 * subsRatio(bids, dayStr(Math.min(w.to - 1, now()))), delays: 30 * ratio(ok + up.length, due + appr.length), problems: 20 * (1 - ratio(open, probs.length, 0)), reports: 10 * clamp(reps / days, 0, 1) };
   s.total = Math.round(s.subs + s.delays + s.problems + s.reports);
-  return { batches: bids.length, openProblems: open, lateNow: ls.filter(l => lectureState(l) === 'late').length, score: s };
+  return { batches: bids.length, bothLate: (appr.length - up.length) + (reps_.length - repOk.length), openProblems: open, lateNow: ls.filter(l => lectureState(l) === 'late').length, score: s };
 }
 function csStats(id, w = defWin()) {
   const lim = num('cs_reply_minutes') * 60e3;
@@ -252,14 +269,17 @@ function dailyReport(u, t = now()) {
   const tk = all(`SELECT * FROM tickets WHERE ${bw} AND created_at<? AND (closed_at IS NULL OR closed_at>=?)`, T, T);
   const problems = tk.filter(x => x.kind === 'problem').map(x => ({ id: x.id, body: x.body.slice(0, 160), student: x.student, age_ms: T - x.created_at, created_at: x.created_at, ...who(x.batch_id) })).sort((a, b) => b.age_ms - a.age_ms);
   const lateQ = [], waitingDoctor = [];
-  for (const x of tk.filter(x => x.kind === 'question')) {
-    const base = { id: x.id, body: x.body.slice(0, 160), student: x.student, ...who(x.batch_id), doctor: names[x.doctor_id] || null };
-    if (!before(x.sent_doctor_at)) { if (T - x.created_at > lim) lateQ.push({ ...base, stage: 'لسه مااتبعتش للدكتور', owner: base.coordinator, late_ms: T - x.created_at - lim }); }
+  const g = supGrace(), both = (base, lateMs) => (lateMs > g ? `${base.coordinator} + المشرف ${base.supervisor}` : base.coordinator);
+  for (const x of tk) {
+    const base = { id: x.id, body: x.body.slice(0, 160), student: x.student, priority: x.priority, due_at: x.due_at, ...who(x.batch_id), doctor: names[x.doctor_id] || null };
+    if (x.due_at && x.due_at < T) { const h = ticketHolder({ ...x, closed_at: null }); lateQ.push({ ...base, stage: `عدّى المهلة اللي اتحددت (${x.kind === 'problem' ? 'مشكلة' : 'سؤال'})`, owner: h === 'doctor' ? `د. ${base.doctor || '—'}` : h === 'cs' ? 'خدمة العملاء' : both(base, T - x.due_at), late_ms: T - x.due_at }); continue; }
+    if (x.kind !== 'question') continue;
+    if (!before(x.sent_doctor_at)) { if (T - x.created_at > lim) lateQ.push({ ...base, stage: 'لسه مااتبعتش للدكتور', owner: both(base, T - x.created_at - lim), late_ms: T - x.created_at - lim }); }
     else if (!before(x.reply_at)) waitingDoctor.push({ ...base, age_ms: T - x.sent_doctor_at });
-    else if (!before(x.returned_at)) { if (T - x.reply_at > lim) lateQ.push({ ...base, stage: 'الدكتور رد ومارجعش لخدمة العملاء', owner: base.coordinator, late_ms: T - x.reply_at - lim }); }
+    else if (!before(x.returned_at)) { if (T - x.reply_at > lim) lateQ.push({ ...base, stage: 'الدكتور رد ومارجعش لخدمة العملاء', owner: both(base, T - x.reply_at - lim), late_ms: T - x.reply_at - lim }); }
     else if (T - x.returned_at > csLim) lateQ.push({ ...base, stage: 'الرد ماوصلش للطالب', owner: 'خدمة العملاء', late_ms: T - x.returned_at - csLim });
   }
-  lateQ.sort((a, b) => b.late_ms - a.late_ms); waitingDoctor.sort((a, b) => b.age_ms - a.age_ms);
+  lateQ.sort((a, b) => (b.priority || 1) - (a.priority || 1) || b.late_ms - a.late_ms); waitingDoctor.sort((a, b) => b.age_ms - a.age_ms);
   // team: what's missing today
   const team = [], lastDayOfWeek = new Date(day + 'T12:00:00Z').getUTCDay() === 5; // Friday ends the Sat-Fri week
   const coords = u.role === 'supervisor' ? all("SELECT DISTINCT u.id, u.name FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.supervisor_id=? AND u.active=1", u.id) : all("SELECT id, name FROM users WHERE role='coordinator' AND active=1 ORDER BY name");
@@ -306,5 +326,5 @@ function coordinatorReport(id, day = dayStr()) {
   return { day, items: [...Object.entries(DAILY), ...Object.entries(WEEKLY)].map(([k, label]) => ({ key: k, label, weekly: !!WEEKLY[k], done: !!map[k]?.done, note: map[k]?.note || '' })), summary: daySummary({ role: 'coordinator', id }, Date.parse(day + 'T12:00:00Z')) };
 }
 
-module.exports = { PRIORITY, monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
+module.exports = { KINDS, typeLabel, numList, supGrace, ticketHolder, returnLate, uploadLate, sendLim, PRIORITY, monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
   doctorStats, coordinatorStats, supervisorStats, csStats, payable, daySummary, batchRows, alerts, aiPrompt, coordinatorReport, fmtDur, latestSubs, dailyReport, dailyReportText };

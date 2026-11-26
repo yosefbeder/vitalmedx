@@ -75,9 +75,13 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const salah = new Client(); await salah.login('salah@vitalmedx.app', pw['salah@vitalmedx.app']);
     await salah.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', name: 'x' }).then(() => ok(false, 'should fail'), e => ok(e.status === 403, 'scope enforced'));
     ok((await salah.req('GET', '/api/lectures')).length === 0, 'salah sees nothing');
-    // repeat lecture default half price
-    const L2 = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'repeat', name: 'Anatomy – Lec 01 (معادة)' });
-    let l2 = await walaa.req('GET', '/api/lectures/' + L2.id); ok(l2.price === 100, 'repeat half price');
+    // repeat lecture: price must be typed manually
+    await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', kind: 'repeat', name: 'x' }).then(() => ok(false), e => ok(e.status === 400, 'repeat needs manual price'));
+    await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'repeat', name: 'x', price: 1 }).then(() => ok(false), e => ok(e.status === 400, 'repeat no longer a type'));
+    const L2 = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', kind: 'repeat', price: 100, name: 'Anatomy – Lec 01 (معادة)' });
+    let l2 = await walaa.req('GET', '/api/lectures/' + L2.id); ok(l2.price === 100 && l2.kind === 'repeat' && l2.type_label === 'نظري · معادة', 'repeat manual price + kind');
+    const LC = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'practical', kind: 'continue', name: 'Physio – part 2' });
+    ok((await walaa.req('GET', '/api/lectures/' + LC.id)).price === 250, 'continue uses type price'); await admin.req('PATCH', '/api/lectures/' + LC.id, { action: 'cancel' });
     // doctor delivers video for L1
     tgCalls.length = 0;
     await hook(msg(5551, { video: { file_id: 'VID1', mime_type: 'video/mp4' } })); await sleep(100);
@@ -136,10 +140,14 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await cbq(6001, kbm.body.reply_markup.inline_keyboard[0][0].callback_data);
     kbm = lastKb(); const bBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.text.startsWith('1-1 '));
     ok(bBtn, 'batch buttons'); await cbq(6001, bBtn.callback_data);
-    kbm = lastKb(); const lBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)); ok(lBtn, 'lecture buttons');
+    kbm = lastKb(); const lBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)); ok(lBtn, 'lecture buttons'); ok(kbm.body.reply_markup.inline_keyboard.flat().some(x => x.callback_data.startsWith('tg:')), 'general doctor option shown');
     tgCalls.length = 0; await cbq(6001, lBtn.callback_data);
     const askS = tgCalls.find(c => /اسم الطالب/.test(c.body.text || '')); ok(askS && /ts:/.test(JSON.stringify(askS.body.reply_markup)), 'bot asks student name with skip');
     tgCalls.length = 0; await hook(msg(6001, { text: 'أحمد 0555123456' })); await sleep(150);
+    const prK = tgCalls.find(c => /الأولوية/.test(c.body.text || '')); ok(prK, 'bot asks priority');
+    tgCalls.length = 0; await cbq(6001, prK.body.reply_markup.inline_keyboard[0][0].callback_data);
+    const dueK = tgCalls.find(c => /خلال قد إيه/.test(c.body.text || '')); ok(dueK, 'bot asks deadline');
+    tgCalls.length = 0; await cbq(6001, dueK.body.reply_markup.inline_keyboard[1][1].callback_data); await sleep(100);
     const toCoord = tgCalls.find(c => String(c.body.chat_id) === '6002' && /سؤال جديد/.test(c.body.text || '')); ok(toCoord, 'coordinator notified');
     ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '6002' && c.body.voice === 'CSVOICE'), 'coordinator got voice');
     const tdBtn = toCoord.body.reply_markup.inline_keyboard[0][0]; ok(tdBtn.text.includes('د. تجربة'), 'lecture doctor first');
@@ -154,6 +162,7 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const toCs = tgCalls.find(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '')); ok(toCs, 'cs got reply');
     await cbq(6001, toCs.body.reply_markup.inline_keyboard[0][0].callback_data);
     const bt = (await admin.req('GET', '/api/tickets')).find(t => t.id === btid); ok(bt.stage === 'closed' && bt.att_kind === 'voice' && bt.lecture_id === L1.id && bt.student === 'أحمد 0555123456', 'bot flow closed (with student)');
+    ok(bt.priority === 3 && bt.due_at && Math.abs(bt.due_at - bt.created_at - 24 * 3600e3) < 5000, 'priority + 24h deadline from bot');
     const attB = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${btid}/attachment`, { headers: { cookie: cs.cookie } }); ok((await attB.text()) === 'OGGDATA', 'tg attachment proxied');
     // payout + contact + admin notify + finance message
     tgCalls.length = 0;
@@ -316,6 +325,66 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     ok(au.rows.some(a => /البوت/.test(a.what)), 'audit: bot actions');
     ok(!au.rows.some(a => /pass/.test(JSON.stringify(a))), 'audit: no passwords');
     await walaa.req('GET', '/api/audit').then(() => ok(false), e => ok(e.status === 403, 'audit admin only'));
+    // ===== v1.7 =====
+    const DB = require('../src/db'), Lg = require('../src/logic'), D_ = Lg.deadline();
+    // general question straight to a doctor (dashboard) + urgent + deadline
+    tgCalls.length = 0;
+    const gq = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, doctor_id: d.id, body: 'سؤال عام في الفسيولوجي', student: 'منى', priority: 3, due_hours: 2 });
+    ok(gq.direct && gq.delivered_to_bot, 'general question sent directly');
+    const toDoc = tgCalls.find(c => String(c.body.chat_id) === '5551' && /سؤال من طالب/.test(c.body.text || '')); ok(toDoc && /مستعجل/.test(toDoc.body.text) && !/1-1|منى/.test(toDoc.body.text), 'doctor sees urgent, no batch/student');
+    await sleep(100); ok(tgCalls.some(c => String(c.body.chat_id) === '6002' && /اتبعت مباشرة/.test(c.body.text || '')), 'coordinator informed of direct question');
+    const myq = await doc.req('GET', '/api/my-questions'); const mq = myq.find(x => x.id === gq.id);
+    ok(mq && mq.urgent && mq.due_at && !('batch_id' in mq) && !('student' in mq) && !('priority' in mq), 'doctor dashboard lists question safely');
+    const rfd7 = new FormData(); rfd7.append("reply", "الإجابة كذا"); rfd7.append('file', new Blob([Buffer.from('OggS fake')], { type: 'audio/ogg' }), 'r.ogg');
+    tgCalls.length = 0; await doc.req("POST", `/api/my-questions/${gq.id}/reply`, rfd7); await sleep(100);
+    ok(tgCalls.some(c => String(c.body.chat_id) === '6002' && /رد على السؤال/.test(c.body.text || '')) && tgCalls.some(c => c.method === 'sendVoice'), 'dashboard reply reaches coordinator with voice');
+    await doc.req('POST', `/api/my-questions/${gq.id}/reply`, { reply: 'x' }).then(() => ok(false), e => ok(e.status === 400, 'no double reply'));
+    const rf7 = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${gq.id}/reply-file`, { headers: { cookie: doc.cookie } }); ok(rf7.status === 200, "doctor plays own reply");
+    // supervisor takes over the late coordinator step
+    await sup.req('PATCH', '/api/tickets/' + gq.id, { action: 'priority', priority: 2 });
+    DB.run('UPDATE tickets SET reply_at=? WHERE id=?', Date.now() - 3 * 3600e3, gq.id);
+    await sup.req('PATCH', '/api/tickets/' + gq.id, { action: 'return' });
+    const gt = (await admin.req('GET', '/api/tickets')).find(x => x.id === gq.id);
+    ok(gt.by.returned.role === 'supervisor' && gt.coord_late && gt.both_late && gt.priority === 2, 'supervisor did it, late on both');
+    const LS = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', name: 'Sup takeover' });
+    DB.run('UPDATE lectures SET video_at=?, q_at=? WHERE id=?', Date.now(), Date.now(), LS.id);
+    await sup.req('PATCH', '/api/lectures/' + LS.id, { action: 'approve', video: true, q: true });
+    DB.run('UPDATE lectures SET video_ok_at=?, q_ok_at=? WHERE id=?', Date.now() - 2 * 3600e3, Date.now() - 2 * 3600e3, LS.id);
+    tgCalls.length = 0; await jobs.reminders();
+    ok(tgCalls.some(c => String(c.body.chat_id) === '6002' && /متأخر: محاضرة/.test(c.body.text || '')), 'upload alert to coordinator');
+    await sup.req('PATCH', '/api/lectures/' + LS.id, { action: 'uploaded' });
+    const ls_ = await sup.req('GET', '/api/lectures/' + LS.id); ok(/المشرف/.test(ls_.uploaded_by_name) && /المشرف/.test(ls_.ok_by_name) && ls_.upload_late, 'lecture shows supervisor did it');
+    ok((await doc.req('GET', '/api/lectures/' + LS.id)).uploaded_by_name === undefined, 'doctor not shown who uploaded');
+    await admin.req('PATCH', '/api/lectures/' + LS.id, { action: 'cancel' });
+    // configurable reminders before deadline + one late alert per day
+    await admin.req('PUT', '/api/settings', { remind_before_hours: '6, 3, 1' });
+    await admin.req('PUT', '/api/settings', { upload_alert_minutes: '6,x' }).then(() => ok(false), e => ok(e.status === 400, 'alert list validated'));
+    const LR = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', name: 'Remind test' });
+    DB.run('UPDATE lectures SET sent_at=? WHERE id=?', Date.now() - D_ + 2 * 3600e3, LR.id);
+    const rem = () => tgCalls.filter(c => String(c.body.chat_id) === '5551' && new RegExp(`تذكير.*#${LR.id}`).test(c.body.text || '')).length;
+    tgCalls.length = 0; await jobs.reminders(); ok(rem() === 1, 'reminder at 3h mark (6h & 3h passed → one msg)');
+    tgCalls.length = 0; await jobs.reminders(); ok(rem() === 0, 'not repeated');
+    DB.run('UPDATE lectures SET sent_at=? WHERE id=?', Date.now() - D_ + 0.5 * 3600e3, LR.id);
+    tgCalls.length = 0; await jobs.reminders(); ok(rem() === 1, 'second reminder at 1h');
+    DB.run('UPDATE lectures SET sent_at=? WHERE id=?', Date.now() - D_ - 60e3, LR.id);
+    tgCalls.length = 0; await jobs.reminders(); ok(tgCalls.some(c => /⚠️ تأخير/.test(c.body.text || '') && c.body.text.includes('Remind test')), 'late day 1');
+    tgCalls.length = 0; await jobs.reminders(); ok(!tgCalls.some(c => (c.body.text || '').includes('Remind test')), 'once per day');
+    DB.run('UPDATE lectures SET sent_at=? WHERE id=?', Date.now() - D_ - 25 * 3600e3, LR.id);
+    tgCalls.length = 0; await jobs.reminders(); ok(tgCalls.some(c => /اليوم 2/.test(c.body.text || '') && c.body.text.includes('Remind test')), 'late day 2');
+    await jobs.reminders(true); // silent priming must not send
+    // ticket deadline passed → everyone
+    const tq2 = await cs.req('POST', '/api/tickets', { kind: 'problem', batch_id: b11.id, body: 'مشكلة مستعجلة', due_hours: 1, priority: 3 });
+    DB.run('UPDATE tickets SET due_at=? WHERE id=?', Date.now() - 60e3, tq2.id);
+    tgCalls.length = 0; await jobs.reminders(); ok(tgCalls.some(c => c.body.chat_id === '999' && /عدّى المهلة/.test(c.body.text || '')), 'due passed alert');
+    ok((await admin.req('GET', '/api/daily-report')).lateQ.some(x => x.id === tq2.id), 'due late in daily report');
+    // forgot password via bot code
+    tgCalls.length = 0; const fr7 = await new Client().req("POST", "/api/forgot", { email: "dr@test.com" }); ok(fr7.ok, 'forgot ok');
+    const codeMsg = tgCalls.find(c => String(c.body.chat_id) === '5551' && /كود/.test(c.body.text || '')); const code = codeMsg && codeMsg.body.text.match(/\d{6}/)[0]; ok(code, 'code sent on telegram');
+    ok((await new Client().req('POST', '/api/forgot', { email: 'nobody@x.com' })).ok, 'unknown email same answer');
+    await new Client().req('POST', '/api/forgot/reset', { email: 'dr@test.com', code: '000000', pass: 'new-pass-123' }).then(() => ok(false), e => ok(e.status === 400, 'wrong code'));
+    await new Client().req('POST', '/api/forgot/reset', { email: 'dr@test.com', code, pass: 'new-pass-123' });
+    const dn = new Client(); await dn.login('dr@test.com', 'new-pass-123'); ok((await dn.req('GET', '/api/me')).role === 'doctor', 'login with new password');
+    await new Client().req('POST', '/api/forgot/reset', { email: 'dr@test.com', code, pass: 'other-pass-123' }).then(() => ok(false), e => ok(e.status === 400, 'code single use'));
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);
