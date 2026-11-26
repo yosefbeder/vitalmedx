@@ -16,12 +16,13 @@ async function call(method, params) {
     return j.ok ? j.result : null;
   } catch (e) { console.error('tg', method, e.message); return null; }
 }
-async function sendFile(method, field, chat_id, buf, filename, caption, mime) {
+async function sendFile(method, field, chat_id, buf, filename, caption, mime, replyTo) {
   if (!enabled()) return null;
   try {
     const fd = new FormData();
     fd.append('chat_id', String(chat_id));
     if (caption) fd.append('caption', caption.slice(0, 1024));
+    if (replyTo) fd.append('reply_to_message_id', String(replyTo));
     fd.append(field, new Blob([buf], { type: mime || 'application/octet-stream' }), filename);
     const r = await fetch(`${API}/${method}`, { method: 'POST', body: fd });
     const j = await r.json();
@@ -52,9 +53,15 @@ async function sendTicket(t) {
   const d = one('SELECT tg_id FROM users WHERE id=?', t.doctor_id);
   if (!d || !d.tg_id) return false;
   const lec = t.lecture_id ? one('SELECT name FROM lectures WHERE id=?', t.lecture_id) : null;
-  const m = await send(d.tg_id, `سؤال من طالب #${t.id}${lec ? `\nعلى محاضرة: ${lec.name}` : ''}\n\n${t.body}\n\nاعمل Reply على الرسالة دي واكتب ردك.`, { reply_markup: { force_reply: true } });
-  if (m) run('UPDATE tickets SET tg_msg_id=? WHERE id=?', m.message_id, t.id);
-  return !!m;
+  const m = await send(d.tg_id, `سؤال من طالب #${t.id}${lec ? `\nعلى محاضرة: ${lec.name}` : ''}\n\n${t.body}${t.att_path ? '\n\n(السؤال مبعوت كمان كملف تحت الرسالة دي)' : ''}\n\nاعمل Reply على الرسالة دي واكتب ردك أو ابعته ريكورد.`, { reply_markup: { force_reply: true } });
+  if (!m) return false;
+  run('UPDATE tickets SET tg_msg_id=? WHERE id=?', m.message_id, t.id);
+  if (t.att_path && require('node:fs').existsSync(t.att_path)) {
+    const mime = t.att_mime || '', [method, field] = /ogg|opus/.test(mime) ? ['sendVoice', 'voice'] : mime.startsWith('audio/') ? ['sendAudio', 'audio'] : mime.startsWith('image/') ? ['sendPhoto', 'photo'] : mime.startsWith('video/') ? ['sendVideo', 'video'] : ['sendDocument', 'document'];
+    const r = await sendFile(method, field, d.tg_id, require('node:fs').readFileSync(t.att_path), t.att_name || 'file', `سؤال #${t.id}`, mime, m.message_id);
+    if (r) { const f = r.voice || r.audio || r.video || r.document || (r.photo && r.photo.at(-1)); run('UPDATE tickets SET att_msg_id=?, att_file_id=? WHERE id=?', r.message_id, f ? f.file_id : null, t.id); }
+  }
+  return true;
 }
 async function notifyPenalty(p) {
   const u = one('SELECT tg_id FROM users WHERE id=?', p.user_id);
@@ -104,14 +111,16 @@ async function handleUpdate(u) {
   }
   // reply to a student question
   const replyTo = m.reply_to_message && m.reply_to_message.message_id;
-  let ticket = replyTo ? one('SELECT * FROM tickets WHERE tg_msg_id=? AND doctor_id=? AND reply_at IS NULL', replyTo, user.id) : null;
-  if (!ticket && text && !m.video && !m.document) {
+  let ticket = replyTo ? one('SELECT * FROM tickets WHERE (tg_msg_id=? OR att_msg_id=?) AND doctor_id=? AND reply_at IS NULL', replyTo, replyTo, user.id) : null;
+  const rf = m.voice ? ['voice', m.voice.file_id] : m.audio ? ['audio', m.audio.file_id] : m.video_note ? ['video_note', m.video_note.file_id] : m.photo ? ['photo', m.photo.at(-1).file_id] : (ticket && m.video) ? ['video', m.video.file_id] : (ticket && m.document) ? ['document', m.document.file_id] : null;
+  if (!ticket && (text || (rf && !m.video && !m.document)) && !m.video && !m.document) {
     const waiting = all('SELECT * FROM tickets WHERE doctor_id=? AND sent_doctor_at IS NOT NULL AND reply_at IS NULL', user.id);
     if (waiting.length === 1) ticket = waiting[0];
     else if (waiting.length > 1) return send(chat, 'عندك أكتر من سؤال مستني رد. اعمل Reply على رسالة السؤال نفسها واكتب ردك.');
   }
-  if (ticket && text) {
-    run('UPDATE tickets SET reply=?, reply_at=? WHERE id=?', text, Date.now(), ticket.id);
+  if (ticket && (text || rf)) {
+    const label = { voice: '[رد صوتي]', audio: '[رد صوتي]', video_note: '[رد فيديو]', photo: '[رد صورة]', video: '[رد فيديو]', document: '[رد ملف]' };
+    run('UPDATE tickets SET reply=?, reply_at=?, reply_file_id=?, reply_kind=? WHERE id=?', text || m.caption || label[rf[0]], Date.now(), rf ? rf[1] : null, rf ? rf[0] : null, ticket.id);
     return send(chat, `تم تسجيل ردك على السؤال #${ticket.id} ✓`);
   }
   // files
@@ -125,6 +134,7 @@ async function handleUpdate(u) {
     if (!ls.length) return send(chat, `استلمت ${what}، بس مفيش محاضرات مستنية ${what} منك دلوقتي.`);
     return send(chat, `استلمت ${what}. يخص أنهي محاضرة؟`, { reply_markup: kb });
   }
+  if (rf) return send(chat, 'لو ده رد على سؤال طالب، اعمل Reply على رسالة السؤال نفسها وابعته تاني.');
   return send(chat, 'ابعت الفيديو أو ملف الأسئلة، أو اعمل Reply على سؤال الطالب. /tasks لعرض مهامك.');
 }
 async function onCallback(q) {

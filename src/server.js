@@ -7,8 +7,10 @@ const A = require('./auth');
 const L = require('./logic');
 const bot = require('./bot');
 const jobs = require('./jobs');
+const { DATA_DIR } = require('./db');
+const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -214,16 +216,19 @@ route('GET', '/api/tickets', async ({ u, q }) => {
   let ts = all(`SELECT t.*, b.code batch_code, d.name doctor, l.name lecture, c.name created_by_name FROM tickets t JOIN batches b ON b.id=t.batch_id LEFT JOIN users d ON d.id=t.doctor_id LEFT JOIN lectures l ON l.id=t.lecture_id LEFT JOIN users c ON c.id=t.created_by
     WHERE ${ids ? `t.batch_id IN (${L.inList(ids)})` : '1=1'} ${q.open === '1' ? 'AND t.closed_at IS NULL' : ''} ORDER BY t.closed_at IS NOT NULL, t.created_at DESC LIMIT 400`);
   const lim = Number(setting('coord_reply_minutes')) * 60e3, cl = Number(setting('cs_reply_minutes')) * 60e3, n = Date.now();
-  return ts.map(t => ({ ...t, stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
+  return ts.map(({ att_path, ...t }) => ({ ...t, has_att: !!att_path, stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
-route('POST', '/api/tickets', async ({ u, body }) => {
+route('POST', '/api/tickets', async ({ u, body, files }) => {
   need(u, 'admin', 'cs', 'coordinator');
   const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'مش مسموح');
   const kind = body.kind === 'problem' ? 'problem' : 'question';
   const lid = int(body.lecture_id); const lec = lid ? one('SELECT * FROM lectures WHERE id=? AND batch_id=?', lid, bid) : null;
-  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : null, req1(str(body.body), 'النص'), str(body.student, 200), u.id, Date.now());
-  return { id: Number(r.lastInsertRowid) };
+  const att = files.att; const text = str(body.body) || (att ? (/^audio|ogg|opus/.test(att.mime || '') ? '[سؤال صوتي]' : '[سؤال مرفق]') : null);
+  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : null, req1(text, 'النص أو الريكورد'), str(body.student, 200), u.id, Date.now());
+  const id = Number(r.lastInsertRowid);
+  if (att) { const f = path.join(ATT, `${id}-${att.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(f, att.buf); run('UPDATE tickets SET att_path=?, att_name=?, att_mime=? WHERE id=?', f, att.name, att.mime || 'application/octet-stream', id); }
+  return { id };
 });
 route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
@@ -239,11 +244,32 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
     case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); break;
     case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); break;
     case 'deliver': if (!csOk || !t.returned_at) fail(400, 'الرد لسه مارجعش'); run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, u.id, n, t.id); break;
-    case 'delete': need(u, 'admin'); run('DELETE FROM tickets WHERE id=?', t.id); break;
+    case 'delete': need(u, 'admin'); if (t.att_path) fs.rmSync(t.att_path, { force: true }); run('DELETE FROM tickets WHERE id=?', t.id); break;
+    case 'forward': {
+      const me = one('SELECT tg_id FROM users WHERE id=?', u.id); if (!me.tg_id) fail(400, 'اربط حسابك بالبوت الأول من صفحة حسابي');
+      if (t.reply_file_id) await bot.call({ voice: 'sendVoice', audio: 'sendAudio', photo: 'sendPhoto', video: 'sendVideo', video_note: 'sendVideoNote' }[t.reply_kind] || 'sendDocument', { chat_id: me.tg_id, [t.reply_kind === 'voice' ? 'voice' : t.reply_kind === 'audio' ? 'audio' : t.reply_kind === 'photo' ? 'photo' : t.reply_kind === 'video' ? 'video' : t.reply_kind === 'video_note' ? 'video_note' : 'document']: t.reply_file_id, ...(t.reply_kind === 'video_note' ? {} : { caption: `رد الدكتور على السؤال #${t.id}` }) });
+      else fail(400, 'الرد مفيهوش ملف');
+      break; }
     case 'close': if (t.kind !== 'problem' || !(coordOk || csOk)) fail(400, 'مش مسموح'); run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', str(body.resolution), n, t.id); break;
     default: fail(400, 'إجراء غير معروف');
   }
   audit(u.id, 'ticket_' + body.action, { id: t.id }); return { ok: true };
+});
+
+route('GET', '/api/tickets/:id/attachment', async ({ u, p, res }) => {
+  const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
+  if (!canBatch(u, t.batch_id) || !t.att_path || !fs.existsSync(t.att_path)) fail(404, 'مفيش مرفق');
+  res.writeHead(200, { 'content-type': t.att_mime || 'application/octet-stream', 'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(t.att_name || 'file')}`, 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' });
+  fs.createReadStream(t.att_path).pipe(res);
+});
+route('GET', '/api/tickets/:id/reply-file', async ({ u, p, res }) => {
+  const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
+  if (!canBatch(u, t.batch_id) || !t.reply_file_id) fail(404, 'مفيش ملف');
+  const url = await bot.getFileUrl(t.reply_file_id); if (!url) fail(502, 'تليجرام مارجعش الملف، استخدم زرار ابعتلي على تليجرام');
+  const r = await fetch(url); if (!r.ok) fail(502, 'تليجرام مارجعش الملف');
+  const types = { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4', video_note: 'video/mp4' };
+  res.writeHead(200, { 'content-type': r.headers.get('content-type') && r.headers.get('content-type') !== 'application/octet-stream' ? r.headers.get('content-type') : (types[t.reply_kind] || 'application/octet-stream'), 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' });
+  res.end(Buffer.from(await r.arrayBuffer()));
 });
 
 /* checklist & reports */
@@ -373,6 +399,7 @@ route('DELETE', '/api/users/:id', async ({ u, p }) => {
 route('POST', '/api/reset', async ({ u, body }) => {
   need(u, 'admin'); if (body.confirm !== 'امسح كل حاجة') fail(400, 'اكتب الجملة صح عشان تأكد');
   await jobs.backup();
+  for (const f of fs.readdirSync(ATT)) fs.rmSync(path.join(ATT, f), { force: true });
   tx(() => { for (const t of ['tickets', 'price_log', 'lectures', 'checklist', 'reports', 'subs', 'penalties', 'bonuses', 'extra_pay', 'settlements', 'shift_notes', 'bot_pending', 'rank_overrides']) run(`DELETE FROM ${t}`); run("UPDATE batches SET exam_date=NULL, exam_note=NULL"); });
   if (body.doctors) { const ds = all("SELECT id FROM users WHERE role='doctor'"); tx(() => { for (const d of ds) { run('DELETE FROM doctors WHERE user_id=?', d.id); run('DELETE FROM users WHERE id=?', d.id); } }); }
   audit(u.id, 'reset', { doctors: !!body.doctors }); return { ok: true };
@@ -491,7 +518,7 @@ const server = http.createServer(async (req, res) => {
     const u = A.userFromReq(req); if (!r.public && !u) fail(401, 'سجل دخول الأول');
     const { body, files } = req.method === 'GET' ? { body: {}, files: {} } : await parse(req);
     const out = await r.fn({ req, res, u, body, files, q: Object.fromEntries(url.searchParams), p: r.re.exec(pathname).groups || {} });
-    send(res, 200, out ?? { ok: true });
+    if (!res.headersSent) send(res, 200, out ?? { ok: true });
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.code, { error: e.message });
     if (/UNIQUE constraint failed: users.email/.test(e.message)) return send(res, 400, { error: 'الإيميل ده مستخدم قبل كده' });

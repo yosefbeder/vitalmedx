@@ -12,11 +12,13 @@ const tgCalls = [];
 let msgId = 1000;
 const tg = http.createServer((req, res) => {
   const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => {
+    if (req.url.startsWith('/file/')) { res.setHeader('content-type', 'audio/ogg'); return res.end('OGGDATA'); }
     const method = req.url.split('/').pop(); const raw = Buffer.concat(chunks);
     let body = {}; try { body = JSON.parse(raw.toString()); } catch { body = { multipart: true, size: raw.length, text: raw.toString('latin1').slice(0, 300) }; }
     tgCalls.push({ method, body });
     let result = true;
-    if (['sendMessage', 'sendDocument', 'sendVideo'].includes(method)) result = { message_id: ++msgId, document: { file_id: 'FILE' + msgId } };
+    if (['sendMessage', 'sendDocument', 'sendVideo', 'sendVoice', 'sendAudio', 'sendPhoto'].includes(method)) result = { message_id: ++msgId, document: { file_id: 'FILE' + msgId } };
+    if (method === 'getFile') result = { file_path: 'voice/file.ogg' };
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, result }));
   });
 });
@@ -111,6 +113,17 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await walaa.req('PATCH', '/api/tickets/' + T.id, { action: 'return' });
     await cs.req('PATCH', '/api/tickets/' + T.id, { action: 'deliver' });
     tk = (await cs.req('GET', '/api/tickets')).find(t => t.id === T.id); ok(tk.stage === 'closed' && !tk.coord_late && !tk.cs_late, 'ticket closed on time');
+    // voice question + voice reply
+    const vfd = new FormData(); vfd.append('kind', 'question'); vfd.append('batch_id', b11.id); vfd.append('lecture_id', L1.id); vfd.append('body', '');
+    vfd.append('att', new Blob([Buffer.from('VOICEQ')], { type: 'audio/ogg' }), 'q.ogg');
+    const VT = await cs.req('POST', '/api/tickets', vfd);
+    const attRes = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${VT.id}/attachment`, { headers: { cookie: walaa.cookie } }); ok((await attRes.text()) === 'VOICEQ', 'attachment served');
+    tgCalls.length = 0;
+    await walaa.req('PATCH', '/api/tickets/' + VT.id, { action: 'send_doctor' });
+    const sv = tgCalls.find(c => c.method === 'sendVoice'); ok(sv && /reply_to_message_id/.test(sv.body.text || ''), 'voice sent to doctor as reply');
+    await hook(msg(5551, { voice: { file_id: 'VREPLY' }, reply_to_message: { message_id: msgId } })); await sleep(100);
+    let vt = (await walaa.req('GET', '/api/tickets')).find(t => t.id === VT.id); ok(vt.reply_file_id === 'VREPLY' && vt.reply_kind === 'voice' && vt.stage === 'return', 'voice reply stored');
+    const rf = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${VT.id}/reply-file`, { headers: { cookie: cs.cookie } }); ok((await rf.text()) === 'OGGDATA', 'reply file proxied');
     // problem
     const P = await cs.req('POST', '/api/tickets', { kind: 'problem', batch_id: b11.id, body: 'الفيديو مش شغال' });
     await walaa.req('PATCH', '/api/tickets/' + P.id, { action: 'close', resolution: 'اترفع تاني' });

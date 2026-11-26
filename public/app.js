@@ -65,7 +65,7 @@ async function boot() {
   document.querySelectorAll('.brandname').forEach(b => (b.textContent = ME.brand)); document.title = ME.brand;
   $('#login').hidden = true; $('#app').hidden = false;
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.3.0</small>`;
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.4.0</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });
@@ -226,6 +226,7 @@ async function openLecture(id) {
 }
 
 /* ----- tickets ----- */
+const media = (src, mime, name) => { mime = mime || ''; if (/^audio|ogg|opus/.test(mime)) return `<div style="margin-top:10px"><audio controls preload="none" src="${esc(src)}" style="width:100%"></audio><a class="mut" href="${esc(src)}" target="_blank" rel="noopener">تحميل</a></div>`; if (mime.startsWith('image/')) return `<div style="margin-top:10px"><a href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="" style="max-width:100%;border-radius:8px"></a></div>`; if (mime.startsWith('video/')) return `<div style="margin-top:10px"><video controls preload="none" src="${esc(src)}" style="width:100%;border-radius:8px"></video></div>`; return `<div style="margin-top:10px"><a class="btn g sm" href="${esc(src)}" target="_blank" rel="noopener">فتح ${esc(name || 'الملف')}</a></div>`; };
 let TF = 'open';
 const STG = { new: ['جديد · مستني يتبعت للدكتور', 'pd'], doctor: ['عند الدكتور', 'rv'], return: ['مستني يرجع لخدمة العملاء', 'warn'], deliver: ['مستني يتبعت للطالب', 'warn'], problem: ['مشكلة مفتوحة', 'bad'], closed: ['مقفولة', 'ok'] };
 V.tickets = async () => {
@@ -236,15 +237,15 @@ V.tickets = async () => {
   $('#main').innerHTML = `${rcs}<div class="row sp"><h2>الأسئلة والمشاكل</h2>${['admin', 'cs', 'coordinator'].includes(ME.role) ? '<button class="btn a" id="nt">+ تذكرة جديدة</button>' : ''}</div>
   <p class="note">مسؤول الدفعة معاه ${esc(ME.settings.coord_reply_minutes)} دقيقة يرجّع رد الدكتور، وخدمة العملاء معاها ${esc(ME.settings.cs_reply_minutes)} دقيقة توصّله للطالب.</p>
   <div class="tabs"><button data-tf="open" class="${TF === 'open' ? 'on' : ''}">المفتوحة</button><button data-tf="all" class="${TF === 'all' ? 'on' : ''}">الكل</button></div>
-  <div class="panel" style="padding:6px 10px">${ts.length ? `<table class="stack"><thead><tr><th>#</th><th>النوع</th><th>الدفعة</th><th>النص</th><th>المرحلة</th><th>الوقت</th><th></th></tr></thead><tbody>${ts.map(t => `<tr><td><b>${t.id}</b></td><td>${t.kind === 'question' ? 'سؤال' : 'مشكلة'}</td><td dir="ltr">${esc(t.batch_code)}</td><td>${esc(t.body.slice(0, 90))}${t.student ? `<div class="mut">${esc(t.student)}</div>` : ''}</td><td>${pill(...STG[t.stage])}${t.coord_late ? '<div class="mut red">المسؤول اتأخر</div>' : ''}${t.cs_late ? '<div class="mut red">خدمة العملاء اتأخرت</div>' : ''}</td><td>${fmt(t.created_at)}</td><td><button class="btn g sm" data-tk="${t.id}">فتح</button></td></tr>`).join('')}</tbody></table>` : empty('مفيش تذاكر')}</div>`;
+  <div class="panel" style="padding:6px 10px">${ts.length ? `<table class="stack"><thead><tr><th>#</th><th>النوع</th><th>الدفعة</th><th>النص</th><th>المرحلة</th><th>الوقت</th><th></th></tr></thead><tbody>${ts.map(t => `<tr><td><b>${t.id}</b></td><td>${t.kind === 'question' ? 'سؤال' : 'مشكلة'}</td><td dir="ltr">${esc(t.batch_code)}</td><td>${esc(t.body.slice(0, 90))}${t.has_att ? ' <span class="p pd">مرفق</span>' : ''}${t.reply_file_id ? ' <span class="p rv">رد صوتي/ملف</span>' : ''}${t.student ? `<div class="mut">${esc(t.student)}</div>` : ''}</td><td>${pill(...STG[t.stage])}${t.coord_late ? '<div class="mut red">المسؤول اتأخر</div>' : ''}${t.cs_late ? '<div class="mut red">خدمة العملاء اتأخرت</div>' : ''}</td><td>${fmt(t.created_at)}</td><td><button class="btn g sm" data-tk="${t.id}">فتح</button></td></tr>`).join('')}</tbody></table>` : empty('مفيش تذاكر')}</div>`;
   document.querySelectorAll('[data-tf]').forEach(b => (b.onclick = () => { TF = b.dataset.tf; V.tickets(); }));
   if ($('#nt')) $('#nt').onclick = newTicket;
 };
 function newTicket() {
   modal('<b>تذكرة جديدة</b>', `<form id="tf"><div class="two"><label>النوع<select name="kind">${opts([['question', 'سؤال طالب'], ['problem', 'مشكلة']], 'question')}</select></label><label>الدفعة<select name="batch_id" id="tb" required>${opts(cache.batches.map(b => [b.id, b.code + ' · ' + b.uni]), '', 'اختار الدفعة')}</select></label></div>
-  <label>المحاضرة (للأسئلة)<select name="lecture_id" id="tl"><option value="">—</option></select></label><label>الطالب (اسم أو رقم)<input name="student"></label><label>النص<textarea name="body" required></textarea></label><button class="btn a">فتح التذكرة</button></form>`);
+  <label>المحاضرة (للأسئلة)<select name="lecture_id" id="tl"><option value="">—</option></select></label><label>الطالب (اسم أو رقم)<input name="student"></label><label>النص (لو السؤال ريكورد بس سيبه فاضي)<textarea name="body"></textarea></label><label>ريكورد أو صورة أو ملف السؤال (اختياري)<input type="file" name="att" accept="audio/*,image/*,video/*,.pdf,.ogg,.opus,.m4a,.mp3"></label><button class="btn a">فتح التذكرة</button></form>`);
   $('#tb').onchange = async () => { const ls = await api('GET', '/api/lectures?limit=200&batch=' + $('#tb').value); $('#tl').innerHTML = '<option value="">—</option>' + ls.map(l => `<option value="${l.id}">#${l.id} ${esc(l.name)} · ${esc(l.doctor)}</option>`).join(''); };
-  $('#tf').onsubmit = async e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const r = await api('POST', '/api/tickets', f); dlg.close(); toast('التذكرة اتفتحت #' + r.id); render(); };
+  $('#tf').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target); if (!String(fd.get('body')).trim() && !(fd.get('att') && fd.get('att').size)) return toast('اكتب السؤال أو ارفع الريكورد'); const btn = e.target.querySelector('button'); btn.disabled = true; try { const r = await api('POST', '/api/tickets', fd); dlg.close(); toast('التذكرة اتفتحت #' + r.id); render(); } catch { btn.disabled = false; } };
 }
 async function openTicket(id) {
   let t = (cache.tickets || []).find(x => x.id === id);
@@ -258,12 +259,13 @@ async function openTicket(id) {
   if (t.stage === 'deliver' && cs) act = `<div class="panel"><h3>ابعت الرد للطالب</h3><button class="btn a" id="tdel">تم، الرد اتبعت للطالب</button></div>`;
   if (t.stage === 'problem' && (coord || cs)) act = `<form id="tc" class="panel"><h3>قفل المشكلة</h3><label>اتحلت إزاي<textarea name="resolution" required></textarea></label><button class="btn a">قفل</button></form>`;
   if (ME.role === 'admin') act += `<div class="row" style="margin-top:12px"><button class="btn sm r" id="tdx">مسح التذكرة</button></div>`;
-  modal(`<b>${t.kind === 'question' ? 'سؤال' : 'مشكلة'} #${t.id}</b> ${pill(...STG[t.stage])}`, `<p class="mut"><span dir="ltr">${esc(t.batch_code)}</span>${t.lecture ? ' · ' + esc(t.lecture) : ''}${t.student ? ' · الطالب: ' + esc(t.student) : ''}</p><div class="panel">${esc(t.body)}</div>${t.reply ? `<div class="panel"><h3>رد الدكتور</h3>${esc(t.reply)}</div>` : ''}${t.resolution ? `<div class="panel"><h3>الحل</h3>${esc(t.resolution)}</div>` : ''}<h3>المراحل</h3><ul class="log">${log.map(([a, x]) => `<li><span class="mut">${fmt(a)}</span><br>${esc(x)}</li>`).join('')}</ul>${act}`);
+  modal(`<b>${t.kind === 'question' ? 'سؤال' : 'مشكلة'} #${t.id}</b> ${pill(...STG[t.stage])}`, `<p class="mut"><span dir="ltr">${esc(t.batch_code)}</span>${t.lecture ? ' · ' + esc(t.lecture) : ''}${t.student ? ' · الطالب: ' + esc(t.student) : ''}</p><div class="panel">${esc(t.body)}${t.has_att ? media(`/api/tickets/${t.id}/attachment`, t.att_mime, t.att_name) : ''}</div>${t.reply ? `<div class="panel"><h3>رد الدكتور</h3>${esc(t.reply)}${t.reply_file_id ? media(`/api/tickets/${t.id}/reply-file`, { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4', video_note: 'video/mp4' }[t.reply_kind] || '', 'رد الدكتور') + '<div style="margin-top:8px"><button class="btn g sm" id="tfw">ابعتلي الرد على تليجرام</button> <span class="mut">لو الصوت مش بيشتغل عندك</span></div>' : ''}</div>` : ''}${t.resolution ? `<div class="panel"><h3>الحل</h3>${esc(t.resolution)}</div>` : ''}<h3>المراحل</h3><ul class="log">${log.map(([a, x]) => `<li><span class="mut">${fmt(a)}</span><br>${esc(x)}</li>`).join('')}</ul>${act}`);
   const go = async (b, m) => { await api('PATCH', '/api/tickets/' + id, b); dlg.close(); toast(m); render(); };
   if ($('#ta')) $('#ta').onsubmit = e => { e.preventDefault(); go({ action: 'send_doctor', doctor_id: new FormData(e.target).get('doctor_id') }, 'اتبعت للدكتور'); };
   if ($('#tr')) $('#tr').onsubmit = e => { e.preventDefault(); go({ action: 'set_reply', reply: new FormData(e.target).get('reply') }, 'الرد اتسجل'); };
   if ($('#tret')) $('#tret').onclick = () => go({ action: 'return' }, 'رجع لخدمة العملاء');
   if ($('#tdel')) $('#tdel').onclick = () => go({ action: 'deliver' }, 'التذكرة اتقفلت');
+  if ($('#tfw')) $('#tfw').onclick = async () => { await api('PATCH', '/api/tickets/' + id, { action: 'forward' }); toast('الرد اتبعتلك على تليجرام'); };
   if ($('#tdx')) $('#tdx').onclick = () => { if ($('#tdx').dataset.sure) return go({ action: 'delete' }, 'اتمسحت'); $('#tdx').dataset.sure = 1; $('#tdx').textContent = 'متأكد؟ دوس تاني للمسح'; };
   if ($('#tc')) $('#tc').onsubmit = e => { e.preventDefault(); go({ action: 'close', resolution: new FormData(e.target).get('resolution') }, 'المشكلة اتقفلت'); };
 }
