@@ -206,6 +206,7 @@ function alerts(u) {
   if (u.role === 'admin') {
     for (const p of all("SELECT p.id, u.name FROM penalties p JOIN users u ON u.id=p.user_id WHERE p.status='proposed'")) out.push({ type: 'penalty', penalty_id: p.id, text: `قرار على ${p.name} مستني اعتمادك`, at: 0 });
     for (const p of all("SELECT p.id, u.name FROM penalties p JOIN users u ON u.id=p.user_id WHERE p.objection IS NOT NULL AND p.reply IS NULL")) out.push({ type: 'penalty', penalty_id: p.id, text: `${p.name} قدّم اعتراض`, at: 0 });
+    for (const a of all("SELECT a.user_id, a.detail, a.at, u.name FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='profile_change' AND a.at>? ORDER BY a.at DESC LIMIT 20", now() - 3 * DAY)) out.push({ type: 'profile', user_id: a.user_id, text: `${a.name} ${JSON.parse(a.detail || '{}').what || 'غيّر بياناته'}`, at: a.at });
   }
   return out.sort((a, b) => a.at - b.at);
 }

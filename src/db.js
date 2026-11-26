@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, user_id INTEGER, action
 if (!db.prepare("SELECT 1 FROM pragma_table_info('lectures') WHERE name='no_q'").get()) db.exec('ALTER TABLE lectures ADD COLUMN no_q INTEGER NOT NULL DEFAULT 0');
 for (const [c, d] of [['priority', 'INTEGER NOT NULL DEFAULT 1'], ['queue_pos', 'INTEGER'], ['excused', 'INTEGER NOT NULL DEFAULT 0'], ['excuse_note', 'TEXT']]) if (!db.prepare("SELECT 1 FROM pragma_table_info('lectures') WHERE name=?").get(c)) db.exec(`ALTER TABLE lectures ADD COLUMN ${c} ${d}`);
 for (const [c, d] of [['att_path', 'TEXT'], ['att_name', 'TEXT'], ['att_mime', 'TEXT'], ['att_file_id', 'TEXT'], ['att_msg_id', 'INTEGER'], ['reply_file_id', 'TEXT'], ['reply_kind', 'TEXT']]) if (!db.prepare("SELECT 1 FROM pragma_table_info('tickets') WHERE name=?").get(c)) db.exec(`ALTER TABLE tickets ADD COLUMN ${c} ${d}`);
+for (const [c, d] of [['tg_username', 'TEXT'], ['whatsapp', 'TEXT']]) if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name=?").get(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} ${d}`);
+db.exec('CREATE TABLE IF NOT EXISTS transfer_msgs(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, note TEXT, file_path TEXT, file_name TEXT, mime TEXT, by INTEGER, delivered INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)');
+db.exec(`CREATE TABLE IF NOT EXISTS payout_methods(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('vodafone','instapay','bank')), name TEXT, number TEXT, bank TEXT, iban TEXT, account TEXT, created_at INTEGER NOT NULL)`);
+db.exec(`CREATE TABLE IF NOT EXISTS bot_drafts(id INTEGER PRIMARY KEY, tg_id TEXT NOT NULL, kind TEXT, body TEXT, file_id TEXT, file_kind TEXT, batch_id INTEGER, created_at INTEGER NOT NULL)`);
+if (!db.prepare("SELECT 1 FROM pragma_table_info('tickets') WHERE name='att_kind'").get()) db.exec('ALTER TABLE tickets ADD COLUMN att_kind TEXT');
 db.exec('CREATE TABLE IF NOT EXISTS rank_overrides(month TEXT NOT NULL, role TEXT NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, by INTEGER, at INTEGER, PRIMARY KEY(month, role, user_id))');
 
 const DEFAULTS = {

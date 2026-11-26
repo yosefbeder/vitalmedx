@@ -124,6 +124,48 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await hook(msg(5551, { voice: { file_id: 'VREPLY' }, reply_to_message: { message_id: msgId } })); await sleep(100);
     let vt = (await walaa.req('GET', '/api/tickets')).find(t => t.id === VT.id); ok(vt.reply_file_id === 'VREPLY' && vt.reply_kind === 'voice' && vt.stage === 'return', 'voice reply stored');
     const rf = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${VT.id}/reply-file`, { headers: { cookie: cs.cookie } }); ok((await rf.text()) === 'OGGDATA', 'reply file proxied');
+    // full bot flow: CS → coordinator → doctor → coordinator → CS
+    const users = await admin.req('GET', '/api/users');
+    const codeOf = e => users.find(x => x.email === e).link_code;
+    await hook(msg(6001, { text: codeOf('cs1@vitalmedx.app') })); await hook(msg(6002, { text: codeOf('walaa@vitalmedx.app') })); await sleep(100);
+    const lastKb = () => tgCalls.filter(c => c.body.reply_markup && c.body.reply_markup.inline_keyboard && c.body.reply_markup.inline_keyboard.length).pop();
+    const cbq = async (from, data) => { await hook({ update_id: upd++, callback_query: { id: 'c' + upd, from: { id: from }, data, message: { message_id: 77, chat: { id: from } } } }); await sleep(120); };
+    tgCalls.length = 0;
+    await hook(msg(6001, { voice: { file_id: 'CSVOICE' }, caption: 'طالب: محمد' })); await sleep(120);
+    let kbm = lastKb(); ok(kbm && String(kbm.body.chat_id) === '6001' && /سؤال لدكتور/.test(JSON.stringify(kbm.body.reply_markup)), 'cs asked kind');
+    await cbq(6001, kbm.body.reply_markup.inline_keyboard[0][0].callback_data);
+    kbm = lastKb(); const bBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.text.startsWith('1-1 '));
+    ok(bBtn, 'batch buttons'); await cbq(6001, bBtn.callback_data);
+    kbm = lastKb(); const lBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)); ok(lBtn, 'lecture buttons');
+    tgCalls.length = 0; await cbq(6001, lBtn.callback_data);
+    const toCoord = tgCalls.find(c => String(c.body.chat_id) === '6002' && /سؤال جديد/.test(c.body.text || '')); ok(toCoord, 'coordinator notified');
+    ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '6002' && c.body.voice === 'CSVOICE'), 'coordinator got voice');
+    const tdBtn = toCoord.body.reply_markup.inline_keyboard[0][0]; ok(tdBtn.text.includes('د. تجربة'), 'lecture doctor first');
+    const btid = Number(tdBtn.callback_data.split(':')[1]);
+    tgCalls.length = 0; await cbq(6002, tdBtn.callback_data);
+    const dq = tgCalls.find(c => String(c.body.chat_id) === '5551' && /سؤال من طالب/.test(c.body.text || '')); ok(dq, 'doctor got question');
+    ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '5551' && c.body.reply_to_message_id), 'doctor got voice as reply');
+    tgCalls.length = 0;
+    await hook(msg(5551, { text: 'الإجابة كذا', reply_to_message: { message_id: dq ? msgId - 1 : 0 } })); await sleep(150);
+    const toC2 = tgCalls.find(c => String(c.body.chat_id) === '6002' && /رد على السؤال/.test(c.body.text || '')); ok(toC2 && /الإجابة كذا/.test(toC2.body.text), 'coordinator got reply');
+    tgCalls.length = 0; await cbq(6002, toC2.body.reply_markup.inline_keyboard[0][0].callback_data);
+    const toCs = tgCalls.find(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '')); ok(toCs, 'cs got reply');
+    await cbq(6001, toCs.body.reply_markup.inline_keyboard[0][0].callback_data);
+    const bt = (await admin.req('GET', '/api/tickets')).find(t => t.id === btid); ok(bt.stage === 'closed' && bt.att_kind === 'voice' && bt.lecture_id === L1.id, 'bot flow closed');
+    const attB = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${btid}/attachment`, { headers: { cookie: cs.cookie } }); ok((await attB.text()) === 'OGGDATA', 'tg attachment proxied');
+    // payout + contact + admin notify + finance message
+    tgCalls.length = 0;
+    await doc.req('PUT', '/api/me/contact', { tg_username: '@drtest', whatsapp: '01012345678' });
+    await doc.req('POST', '/api/me/payout', { kind: 'vodafone', name: 'د تجربة', number: '01012345678' });
+    await doc.req('POST', '/api/me/payout', { kind: 'bank', name: 'د تجربة', bank: 'CIB', iban: 'EG00123' });
+    await doc.req('POST', '/api/me/payout', { kind: 'bank', name: 'x' }).then(() => ok(false), e => ok(e.status === 400, 'bank needs fields'));
+    ok(tgCalls.filter(c => c.body.chat_id === '999' && /تنبيه/.test(c.body.text || '')).length >= 3, 'admin notified of changes');
+    ok((await admin.req('GET', '/api/home')).alerts.some(a => a.type === 'profile'), 'profile alert');
+    let fd2 = await admin.req('GET', '/api/finance/' + d.id); ok(fd2.payout.length === 2 && fd2.user.whatsapp === '01012345678' && fd2.user.tg_username === 'drtest', 'finance shows payout+contact');
+    const rfd = new FormData(); rfd.append('note', 'اتحوّل ✓'); rfd.append('receipt', new Blob([Buffer.from('PNG')], { type: 'image/png' }), 'r.png');
+    tgCalls.length = 0; const mr2 = await admin.req('POST', `/api/finance/${d.id}/message`, rfd); ok(mr2.delivered && tgCalls.some(c => c.method === 'sendPhoto'), 'receipt sent');
+    ok((await doc.req('GET', '/api/me/transfers')).length === 1, 'doctor sees transfer msg');
+    const fl = await admin.req('GET', '/api/finance'); ok(fl.every((r, i) => i === 0 || r.net <= fl[i - 1].net), 'finance sorted desc');
     // problem
     const P = await cs.req('POST', '/api/tickets', { kind: 'problem', batch_id: b11.id, body: 'الفيديو مش شغال' });
     await walaa.req('PATCH', '/api/tickets/' + P.id, { action: 'close', resolution: 'اترفع تاني' });
@@ -206,6 +248,17 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await hook(msg(5551, { text: '/tasks' })); await sleep(100);
     const tasksTxt = tgCalls.find(c => c.method === 'sendMessage').body.text; ok(tasksTxt.indexOf('#' + LP.id) < tasksTxt.indexOf('#' + L2.id) && !/مهم/.test(tasksTxt), 'queue order in bot, no priority');
     const mr = await walaa.req('GET', '/api/myrank'); ok(mr.rank >= 1 && mr.of === 5, 'myrank');
+    // impersonation
+    const imp = new Client(); await imp.login('admin@vitalmedx.app', 'admin-pass-123');
+    const wid = users.find(x => x.email === 'walaa@vitalmedx.app').id;
+    const r1 = await fetch(`http://127.0.0.1:${PORT}/api/impersonate/${wid}`, { method: 'POST', headers: { cookie: imp.cookie, 'x-requested-with': 'vm' } });
+    const ck = r1.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
+    const meI = await fetch(`http://127.0.0.1:${PORT}/api/me`, { headers: { cookie: ck } }).then(r => r.json()); ok(meI.name === 'ولاء' && meI.impersonated_by === 'الأدمن', 'impersonating');
+    const bsI = await fetch(`http://127.0.0.1:${PORT}/api/batches`, { headers: { cookie: ck } }).then(r => r.json()); ok(bsI.length === 5, 'impersonated scope');
+    const r2 = await fetch(`http://127.0.0.1:${PORT}/api/impersonate-stop`, { method: 'POST', headers: { cookie: ck, 'x-requested-with': 'vm' } });
+    const ck2 = r2.headers.getSetCookie().map(c => c.split(';')[0]).filter(c => !c.endsWith('=')).join('; ');
+    const meB = await fetch(`http://127.0.0.1:${PORT}/api/me`, { headers: { cookie: ck2 } }).then(r => r.json()); ok(meB.role === 'admin' && !meB.impersonated_by, 'back to admin');
+    await walaa.req('POST', `/api/impersonate/${d.id}`).then(() => ok(false), e => ok(e.status === 403, 'non-admin cannot impersonate'));
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);

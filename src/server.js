@@ -10,7 +10,7 @@ const jobs = require('./jobs');
 const { DATA_DIR } = require('./db');
 const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -41,10 +41,22 @@ route('POST', '/api/login', async ({ body, res }) => {
   res.setHeader('Set-Cookie', A.makeCookie(u.id)); audit(u.id, 'login');
   return { ok: true };
 }, { public: true });
-route('POST', '/api/logout', async ({ res }) => { res.setHeader('Set-Cookie', A.clearCookie()); return { ok: true }; }, { public: true });
-route('GET', '/api/me', async ({ u }) => {
-  const x = one('SELECT id,name,email,role,tg_id,link_code FROM users WHERE id=?', u.id);
-  return { ...x, linked: !!x.tg_id, brand: setting('brand'), types: L.TYPES, daily: L.DAILY, weekly: L.WEEKLY,
+route('POST', '/api/logout', async ({ res }) => { res.setHeader('Set-Cookie', [A.clearCookie(), A.clearImp()]); return { ok: true }; }, { public: true });
+route('POST', '/api/impersonate/:id', async ({ u, p, res, req }) => {
+  const realAdmin = u.role === 'admin' ? u : A.impFromReq(req); if (!realAdmin) fail(403, 'الأدمن بس');
+  const t = one('SELECT id, name, role, active FROM users WHERE id=?', int(p.id)) || fail(404, 'مش موجود');
+  if (!t.active) fail(400, 'الحساب ده مقفول'); if (t.role === 'admin') fail(400, 'مينفعش تدخل على حساب أدمن');
+  res.setHeader('Set-Cookie', [A.makeCookie(t.id), A.impCookie(realAdmin.id)]); audit(realAdmin.id, 'impersonate', { as: t.id });
+  return { ok: true };
+});
+route('POST', '/api/impersonate-stop', async ({ res, req }) => {
+  const a = A.impFromReq(req) || fail(400, 'إنت مش داخل على حساب حد');
+  res.setHeader('Set-Cookie', [A.makeCookie(a.id), A.clearImp()]); return { ok: true };
+});
+route('GET', '/api/me', async ({ u, req }) => {
+  const x = one('SELECT id,name,email,role,tg_id,link_code,tg_username,whatsapp FROM users WHERE id=?', u.id);
+  const imp = x.role !== 'admin' ? A.impFromReq(req) : null;
+  return { ...x, impersonated_by: imp ? imp.name : null, linked: !!x.tg_id, brand: setting('brand'), types: L.TYPES, daily: L.DAILY, weekly: L.WEEKLY,
     settings: { deadline_hours: setting('deadline_hours'), upload_minutes: setting('upload_minutes'), coord_reply_minutes: setting('coord_reply_minutes'), cs_reply_minutes: setting('cs_reply_minutes'), repeat_ratio: setting('repeat_ratio') }, today: L.dayStr(), week: L.weekStr() };
 });
 route('POST', '/api/me/password', async ({ u, body }) => {
@@ -53,6 +65,49 @@ route('POST', '/api/me/password', async ({ u, body }) => {
   if (!body.new || String(body.new).length < 8) fail(400, 'كلمة المرور الجديدة لازم 8 حروف على الأقل');
   run('UPDATE users SET pass=? WHERE id=?', A.hash(body.new), u.id); return { ok: true };
 });
+
+/* payout methods */
+const PAYOUT = { vodafone: 'فودافون كاش', instapay: 'إنستاباي', bank: 'حساب بنكي' };
+const ROLE_AR = { admin: 'أدمن', supervisor: 'مشرف', coordinator: 'مسؤول دفعة', cs: 'خدمة عملاء', doctor: 'دكتور' };
+function notifyChange(u, what) { audit(u.id, 'profile_change', { what }); const x = one('SELECT name, role FROM users WHERE id=?', u.id); if (x.role !== 'admin') bot.sendAdmin(`تنبيه: ${x.name} (${ROLE_AR[x.role]}) ${what}.\nراجعها من الحسابات.`).catch(() => {}); }
+route('GET', '/api/me/payout', async ({ u }) => all('SELECT * FROM payout_methods WHERE user_id=? ORDER BY id', u.id));
+route('PUT', '/api/me/contact', async ({ u, body }) => {
+  const tgu = (str(body.tg_username, 64) || '').replace(/^@/, '').replace(/[^\w]/g, '') || null, wa = (str(body.whatsapp, 30) || '').replace(/[^\d+]/g, '') || null;
+  const old = one('SELECT tg_username, whatsapp FROM users WHERE id=?', u.id);
+  run('UPDATE users SET tg_username=?, whatsapp=? WHERE id=?', tgu, wa, u.id);
+  if (old.tg_username !== tgu || old.whatsapp !== wa) notifyChange(u, `غيّر بيانات التواصل (تليجرام: ${tgu ? '@' + tgu : '—'} · واتساب: ${wa || '—'})`);
+  return { ok: true };
+});
+route('GET', '/api/me/transfers', async ({ u }) => all('SELECT id, note, file_name, mime, created_at, (file_path IS NOT NULL) has_file FROM transfer_msgs WHERE user_id=? ORDER BY created_at DESC LIMIT 30', u.id));
+route('GET', '/api/transfers/:id/file', async ({ u, p, res }) => {
+  const t = one('SELECT * FROM transfer_msgs WHERE id=?', int(p.id)) || fail(404, 'مش موجود');
+  if (u.role !== 'admin' && t.user_id !== u.id) fail(403, 'مش مسموح'); if (!t.file_path || !fs.existsSync(t.file_path)) fail(404, 'مفيش ملف');
+  res.writeHead(200, { 'content-type': t.mime || 'application/octet-stream', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' }); fs.createReadStream(t.file_path).pipe(res);
+});
+route('POST', '/api/finance/:id/message', async ({ u, body, files, p }) => {
+  need(u, 'admin'); const id = int(p.id), target = one('SELECT id, name, tg_id FROM users WHERE id=?', id) || fail(404, 'مش موجود');
+  const note = str(body.note, 2000), f = files.receipt; if (!note && !f) fail(400, 'اكتب ملاحظة أو ارفع الإيصال');
+  let fp = null; if (f) { fp = path.join(ATT, `tr-${id}-${Date.now()}-${f.name.replace(/[^\w.\-]+/g, '_').slice(-50)}`); fs.writeFileSync(fp, f.buf); }
+  const r = run('INSERT INTO transfer_msgs(user_id,note,file_path,file_name,mime,by,created_at) VALUES(?,?,?,?,?,?,?)', id, note, fp, f ? f.name : null, f ? f.mime : null, u.id, Date.now());
+  let ok = false;
+  if (target.tg_id) {
+    const cap = `رسالة من الحسابات${note ? `\n\n${note}` : ''}`;
+    if (f) ok = !!(await bot.sendFile((f.mime || '').startsWith('image/') ? 'sendPhoto' : 'sendDocument', (f.mime || '').startsWith('image/') ? 'photo' : 'document', target.tg_id, f.buf, f.name, cap, f.mime));
+    else ok = !!(await bot.send(target.tg_id, cap));
+  }
+  run('UPDATE transfer_msgs SET delivered=? WHERE id=?', ok ? 1 : 0, Number(r.lastInsertRowid));
+  return { ok: true, delivered: ok };
+});
+route('POST', '/api/me/payout', async ({ u, body }) => {
+  const kind = body.kind in PAYOUT ? body.kind : fail(400, 'اختار طريقة التحويل');
+  const name = req1(str(body.name, 120), 'الاسم');
+  if (kind === 'bank') { req1(str(body.bank, 120), 'اسم البنك'); if (!str(body.iban, 60) && !str(body.account, 60)) fail(400, 'اكتب الأيبان أو رقم الحساب'); }
+  else req1(str(body.number, 60), 'الرقم');
+  run('INSERT INTO payout_methods(user_id,kind,name,number,bank,iban,account,created_at) VALUES(?,?,?,?,?,?,?,?)', u.id, kind, name, str(body.number, 60), str(body.bank, 120), str(body.iban, 60), str(body.account, 60), Date.now());
+  notifyChange(u, `ضاف طريقة تحويل جديدة (${PAYOUT[kind]})`);
+  return { ok: true };
+});
+route('DELETE', '/api/me/payout/:id', async ({ u, p }) => { const x = one('SELECT kind FROM payout_methods WHERE id=? AND user_id=?', int(p.id), u.id); if (x) { run('DELETE FROM payout_methods WHERE id=?', int(p.id)); notifyChange(u, `مسح طريقة تحويل (${PAYOUT[x.kind]})`); } return { ok: true }; });
 
 /* home */
 route('GET', '/api/home', async ({ u }) => {
@@ -216,7 +271,7 @@ route('GET', '/api/tickets', async ({ u, q }) => {
   let ts = all(`SELECT t.*, b.code batch_code, d.name doctor, l.name lecture, c.name created_by_name FROM tickets t JOIN batches b ON b.id=t.batch_id LEFT JOIN users d ON d.id=t.doctor_id LEFT JOIN lectures l ON l.id=t.lecture_id LEFT JOIN users c ON c.id=t.created_by
     WHERE ${ids ? `t.batch_id IN (${L.inList(ids)})` : '1=1'} ${q.open === '1' ? 'AND t.closed_at IS NULL' : ''} ORDER BY t.closed_at IS NOT NULL, t.created_at DESC LIMIT 400`);
   const lim = Number(setting('coord_reply_minutes')) * 60e3, cl = Number(setting('cs_reply_minutes')) * 60e3, n = Date.now();
-  return ts.map(({ att_path, ...t }) => ({ ...t, has_att: !!att_path, stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
+  return ts.map(({ att_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
 route('POST', '/api/tickets', async ({ u, body, files }) => {
@@ -227,6 +282,7 @@ route('POST', '/api/tickets', async ({ u, body, files }) => {
   const att = files.att; const text = str(body.body) || (att ? (/^audio|ogg|opus/.test(att.mime || '') ? '[سؤال صوتي]' : '[سؤال مرفق]') : null);
   const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : null, req1(text, 'النص أو الريكورد'), str(body.student, 200), u.id, Date.now());
   const id = Number(r.lastInsertRowid);
+  setImmediate(() => bot.notifyCoordNew(one('SELECT * FROM tickets WHERE id=?', id)).catch(e => console.error(e)));
   if (att) { const f = path.join(ATT, `${id}-${att.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(f, att.buf); run('UPDATE tickets SET att_path=?, att_name=?, att_mime=? WHERE id=?', f, att.name, att.mime || 'application/octet-stream', id); }
   return { id };
 });
@@ -242,7 +298,7 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
       const ok = await bot.sendTicket(one('SELECT * FROM tickets WHERE id=?', t.id));
       return { ok: true, delivered_to_bot: ok }; }
     case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); break;
-    case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); break;
+    case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); if (!t.returned_at) await bot.notifyCsReturn(one('SELECT * FROM tickets WHERE id=?', t.id)); break;
     case 'deliver': if (!csOk || !t.returned_at) fail(400, 'الرد لسه مارجعش'); run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, u.id, n, t.id); break;
     case 'delete': need(u, 'admin'); if (t.att_path) fs.rmSync(t.att_path, { force: true }); run('DELETE FROM tickets WHERE id=?', t.id); break;
     case 'forward': {
@@ -258,7 +314,9 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
 
 route('GET', '/api/tickets/:id/attachment', async ({ u, p, res }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  if (!canBatch(u, t.batch_id) || !t.att_path || !fs.existsSync(t.att_path)) fail(404, 'مفيش مرفق');
+  if (!canBatch(u, t.batch_id)) fail(404, 'مفيش مرفق');
+  if (!t.att_path && t.att_file_id) { const url = await bot.getFileUrl(t.att_file_id); if (!url) fail(502, 'تليجرام مارجعش الملف'); const r = await fetch(url); if (!r.ok) fail(502, 'تليجرام مارجعش الملف'); res.writeHead(200, { 'content-type': t.att_mime || 'application/octet-stream', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' }); return res.end(Buffer.from(await r.arrayBuffer())); }
+  if (!t.att_path || !fs.existsSync(t.att_path)) fail(404, 'مفيش مرفق');
   res.writeHead(200, { 'content-type': t.att_mime || 'application/octet-stream', 'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(t.att_name || 'file')}`, 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' });
   fs.createReadStream(t.att_path).pipe(res);
 });
@@ -355,13 +413,13 @@ route('PATCH', '/api/penalties/:id', async ({ u, body, p }) => {
 /* finance */
 route('GET', '/api/finance', async ({ u }) => {
   need(u, 'admin');
-  return all("SELECT id,name,role,salary FROM users WHERE active=1 AND role!='admin' ORDER BY role,name").map(x => { const pq = L.payable(x.id); return { ...x, gross: pq.gross, bonus: pq.bonus, deductions: pq.deductions, net: pq.net, lectures: pq.lecs.length, pending: pq.pendingLecs }; });
+  return all("SELECT id,name,role,salary FROM users WHERE active=1 AND role!='admin' ORDER BY role,name").map(x => { const pq = L.payable(x.id); return { ...x, gross: pq.gross, bonus: pq.bonus, deductions: pq.deductions, net: pq.net, lectures: pq.lecs.length, pending: pq.pendingLecs, payout: (one('SELECT COUNT(*) n FROM payout_methods WHERE user_id=?', x.id) || {}).n }; }).sort((a, b) => b.net - a.net);
 });
 route('GET', '/api/finance/:id', async ({ u, p }) => {
   const id = int(p.id); if (u.role !== 'admin' && u.id !== id) fail(403, 'مش مسموح');
   const pq = L.payable(id);
   const lecs = pq.lecs.map(l => ({ id: l.id, name: l.name, type: l.type, price: l.price, sent_at: l.sent_at, delivered_at: Math.max(l.video_at, l.q_at) }));
-  return { user: one('SELECT id,name,role,salary FROM users WHERE id=?', id), ...pq, lecs, settlements: all('SELECT * FROM settlements WHERE user_id=? ORDER BY created_at DESC LIMIT 24', id) };
+  return { user: one('SELECT id,name,role,salary,tg_username,whatsapp,phone,(tg_id IS NOT NULL) linked FROM users WHERE id=?', id), transfers: u.role === 'admin' ? all('SELECT id, note, file_name, mime, delivered, created_at, (file_path IS NOT NULL) has_file FROM transfer_msgs WHERE user_id=? ORDER BY created_at DESC LIMIT 20', id) : [], ...pq, lecs, payout: all('SELECT * FROM payout_methods WHERE user_id=? ORDER BY id', id), settlements: all('SELECT * FROM settlements WHERE user_id=? ORDER BY created_at DESC LIMIT 24', id) };
 });
 route('POST', '/api/finance/:id/settle', async ({ u, body, p }) => {
   need(u, 'admin'); const id = int(p.id), pq = L.payable(id), n = Date.now(), kind = body.kind === 'early' ? 'early' : 'month';

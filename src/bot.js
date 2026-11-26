@@ -56,12 +56,51 @@ async function sendTicket(t) {
   const m = await send(d.tg_id, `سؤال من طالب #${t.id}${lec ? `\nعلى محاضرة: ${lec.name}` : ''}\n\n${t.body}${t.att_path ? '\n\n(السؤال مبعوت كمان كملف تحت الرسالة دي)' : ''}\n\nاعمل Reply على الرسالة دي واكتب ردك أو ابعته ريكورد.`, { reply_markup: { force_reply: true } });
   if (!m) return false;
   run('UPDATE tickets SET tg_msg_id=? WHERE id=?', m.message_id, t.id);
-  if (t.att_path && require('node:fs').existsSync(t.att_path)) {
+  if (t.att_file_id && !t.att_path) { const r = await sendByKind(d.tg_id, t.att_kind || 'document', t.att_file_id, `سؤال #${t.id}`, { reply_to_message_id: m.message_id }); if (r) run('UPDATE tickets SET att_msg_id=? WHERE id=?', r.message_id, t.id); }
+  else if (t.att_path && require('node:fs').existsSync(t.att_path)) {
     const mime = t.att_mime || '', [method, field] = /ogg|opus/.test(mime) ? ['sendVoice', 'voice'] : mime.startsWith('audio/') ? ['sendAudio', 'audio'] : mime.startsWith('image/') ? ['sendPhoto', 'photo'] : mime.startsWith('video/') ? ['sendVideo', 'video'] : ['sendDocument', 'document'];
     const r = await sendFile(method, field, d.tg_id, require('node:fs').readFileSync(t.att_path), t.att_name || 'file', `سؤال #${t.id}`, mime, m.message_id);
     if (r) { const f = r.voice || r.audio || r.video || r.document || (r.photo && r.photo.at(-1)); run('UPDATE tickets SET att_msg_id=?, att_file_id=? WHERE id=?', r.message_id, f ? f.file_id : null, t.id); }
   }
   return true;
+}
+const KIND_SEND = { voice: ['sendVoice', 'voice'], audio: ['sendAudio', 'audio'], photo: ['sendPhoto', 'photo'], video: ['sendVideo', 'video'], video_note: ['sendVideoNote', 'video_note'], document: ['sendDocument', 'document'] };
+const sendByKind = (chat_id, kind, file_id, caption, extra = {}) => { const [m, f] = KIND_SEND[kind] || KIND_SEND.document; return call(m, { chat_id, [f]: file_id, ...(kind === 'video_note' ? {} : { caption }), ...extra }); };
+const KIND_MIME = { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4', video_note: 'video/mp4', document: 'application/octet-stream' };
+function msgContent(m) {
+  if (m.voice) return ['voice', m.voice.file_id]; if (m.audio) return ['audio', m.audio.file_id]; if (m.photo) return ['photo', m.photo.at(-1).file_id];
+  if (m.video) return ['video', m.video.file_id]; if (m.video_note) return ['video_note', m.video_note.file_id]; if (m.document) return ['document', m.document.file_id]; return null;
+}
+const tkHead = t => { const b = one('SELECT code FROM batches WHERE id=?', t.batch_id) || {}; const l = t.lecture_id ? one('SELECT name FROM lectures WHERE id=?', t.lecture_id) : null; return `دفعة ${b.code || ''}${l ? ` · ${l.name}` : ''}${t.student ? `\nالطالب: ${t.student}` : ''}`; };
+async function sendAtt(chat, t, caption, extra) {
+  if (t.att_file_id) return sendByKind(chat, t.att_kind || 'document', t.att_file_id, caption, extra);
+  if (t.att_path && require('node:fs').existsSync(t.att_path)) return sendFile('sendDocument', 'document', chat, require('node:fs').readFileSync(t.att_path), t.att_name || 'file', caption, t.att_mime);
+}
+async function notifyCoordNew(t) {
+  const c = one('SELECT u.tg_id FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id);
+  if (!c || !c.tg_id) return;
+  if (t.kind === 'problem') { await send(c.tg_id, `مشكلة جديدة #${t.id}\n${tkHead(t)}\n\n${t.body}`, { reply_markup: { inline_keyboard: [[{ text: 'اتحلت ✓', callback_data: `tp:${t.id}` }]] } }); if (t.att_file_id || t.att_path) await sendAtt(c.tg_id, t, `مرفق المشكلة #${t.id}`); return; }
+  const docs = [];
+  if (t.lecture_id) { const d = one('SELECT u.id, u.name FROM lectures l JOIN users u ON u.id=l.doctor_id WHERE l.id=?', t.lecture_id); if (d) docs.push(d); }
+  for (const d of all("SELECT DISTINCT u.id, u.name FROM lectures l JOIN users u ON u.id=l.doctor_id WHERE l.batch_id=? AND u.active=1 ORDER BY l.sent_at DESC LIMIT 12", t.batch_id)) if (!docs.some(x => x.id === d.id)) docs.push(d);
+  if (!docs.length) for (const d of all("SELECT id, name FROM users WHERE role='doctor' AND active=1 ORDER BY name LIMIT 30")) docs.push(d);
+  await send(c.tg_id, `سؤال جديد من خدمة العملاء #${t.id}\n${tkHead(t)}\n\n${t.body}\n\nابعته لأنهي دكتور؟`, { reply_markup: { inline_keyboard: docs.map((d, i) => [{ text: `${i === 0 && t.lecture_id ? '⭐ ' : ''}${d.name}`, callback_data: `td:${t.id}:${d.id}` }]) } });
+  if (t.att_file_id || t.att_path) await sendAtt(c.tg_id, t, `السؤال #${t.id}`);
+}
+async function notifyCoordReply(t) {
+  const c = one('SELECT u.tg_id FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id);
+  if (!c || !c.tg_id) return;
+  const d = one('SELECT name FROM users WHERE id=?', t.doctor_id) || {};
+  const kb = { reply_markup: { inline_keyboard: [[{ text: 'رجّعه لخدمة العملاء', callback_data: `tr:${t.id}` }]] } };
+  await send(c.tg_id, `${d.name || 'الدكتور'} رد على السؤال #${t.id}\n${tkHead(t)}\n\nالسؤال: ${t.body}\n\nالرد: ${t.reply}${t.reply_file_id ? '\n(الرد الصوتي/الملف تحت الرسالة دي)' : ''}\n\nمعاك ${setting('coord_reply_minutes')} دقيقة ترجّعه.`, t.reply_file_id ? {} : kb);
+  if (t.reply_file_id) await sendByKind(c.tg_id, t.reply_kind, t.reply_file_id, `رد الدكتور على #${t.id}`, kb);
+}
+async function notifyCsReturn(t) {
+  const kb = { reply_markup: { inline_keyboard: [[{ text: 'اتبعت للطالب ✓', callback_data: `tc:${t.id}` }]] } };
+  for (const c of all("SELECT tg_id FROM users WHERE role='cs' AND active=1 AND tg_id IS NOT NULL")) {
+    await send(c.tg_id, `رد جاهز للطالب #${t.id}\n${tkHead(t)}\n\nالسؤال: ${t.body}\n\nالرد: ${t.reply}${t.reply_file_id ? '\n(الرد الصوتي/الملف تحت الرسالة دي، اعمله Forward للطالب)' : ''}\n\nمعاك ${setting('cs_reply_minutes')} دقيقة.`, t.reply_file_id ? {} : kb);
+    if (t.reply_file_id) await sendByKind(c.tg_id, t.reply_kind, t.reply_file_id, `رد على السؤال #${t.id}`, kb);
+  }
 }
 async function notifyPenalty(p) {
   const u = one('SELECT tg_id FROM users WHERE id=?', p.user_id);
@@ -74,7 +113,7 @@ async function remind(l, overdue) {
   await send(d.tg_id, overdue ? `تنبيه: مهلة المحاضرة #${l.id} خلصت، والتأخير بيتسجل.\n${l.name}\nناقص: ${miss}` : `تذكير: باقي ${L.fmtDur(l.sent_at + L.deadline() - Date.now())} على تسليم المحاضرة #${l.id}\n${l.name}\nناقص: ${miss}`);
 }
 const adminChat = () => process.env.ADMIN_CHAT_ID;
-const sendAdmin = text => send(adminChat(), text);
+async function sendAdmin(text) { const sent = new Set(); if (adminChat()) { sent.add(String(adminChat())); await send(adminChat(), text); } for (const a of all("SELECT tg_id FROM users WHERE role='admin' AND active=1 AND tg_id IS NOT NULL")) if (!sent.has(String(a.tg_id))) { sent.add(String(a.tg_id)); await send(a.tg_id, text); } }
 
 function openLectures(docId, field) {
   return all(`SELECT * FROM lectures WHERE doctor_id=? AND ${field} IS NULL ORDER BY queue_pos IS NULL, queue_pos, sent_at LIMIT 20`, docId);
@@ -102,6 +141,13 @@ async function handleUpdate(u) {
   }
   if (!user) return send(chat, `أهلاً بيك في بوت ${setting('brand')}.\nابعت كود الربط اللي وصلك من الإدارة (بيبدأ بـ VM-).`);
   if (text === '/start') return send(chat, `أهلاً ${user.name} 👋\n/tasks لعرض المحاضرات المفتوحة`);
+  if (user.role === 'cs' || (user.role === 'admin' && !text.startsWith('/'))) {
+    const c = msgContent(m), body = (text || m.caption || '').trim();
+    if (!c && !body) return send(chat, 'ابعت سؤال الطالب هنا (نص أو ريكورد أو صورة)، وأنا هوصّله لمسؤول الدفعة.');
+    run('DELETE FROM bot_drafts WHERE tg_id=? AND batch_id IS NULL', from);
+    const r = run('INSERT INTO bot_drafts(tg_id,body,file_id,file_kind,created_at) VALUES(?,?,?,?,?)', from, body || null, c ? c[1] : null, c ? c[0] : null, Date.now());
+    return send(chat, 'تمام. ده سؤال لدكتور ولا مشكلة؟', { reply_markup: { inline_keyboard: [[{ text: 'سؤال لدكتور', callback_data: `k:${r.lastInsertRowid}:question` }, { text: 'مشكلة', callback_data: `k:${r.lastInsertRowid}:problem` }]] } });
+  }
   if (user.role !== 'doctor') return send(chat, `أهلاً ${user.name}، حسابك مربوط بالبوت ✓\nالبوت بيستقبل الفيديوهات وملفات الأسئلة من حسابات الدكاترة بس.\nإرسال المحاضرات للدكاترة بيتم من لوحة التحكم، والبوت هيبعتلك هنا أي ملفات تطلبها من صفحة المحاضرة (زرار "ابعتلي الملفات على تليجرام").`);
   if (text === '/tasks') {
     const ls = all('SELECT * FROM lectures WHERE doctor_id=? AND (video_at IS NULL OR q_at IS NULL) ORDER BY queue_pos IS NULL, queue_pos, sent_at', user.id);
@@ -121,6 +167,7 @@ async function handleUpdate(u) {
   if (ticket && (text || rf)) {
     const label = { voice: '[رد صوتي]', audio: '[رد صوتي]', video_note: '[رد فيديو]', photo: '[رد صورة]', video: '[رد فيديو]', document: '[رد ملف]' };
     run('UPDATE tickets SET reply=?, reply_at=?, reply_file_id=?, reply_kind=? WHERE id=?', text || m.caption || label[rf[0]], Date.now(), rf ? rf[1] : null, rf ? rf[0] : null, ticket.id);
+    notifyCoordReply(one('SELECT * FROM tickets WHERE id=?', ticket.id)).catch(e => console.error('notify', e));
     return send(chat, `تم تسجيل ردك على السؤال #${ticket.id} ✓`);
   }
   // files
@@ -139,6 +186,7 @@ async function handleUpdate(u) {
 }
 async function onCallback(q) {
   const from = String(q.from.id), chat = q.message && q.message.chat.id;
+  if (/^(k|tb|tl|td|tr|tc|tp):/.test(q.data || '')) return onTicketCallback(q, from, chat);
   const m = /^p:(\d+):(\d+)$/.exec(q.data || '');
   const user = one("SELECT * FROM users WHERE tg_id=? AND role='doctor' AND active=1", from);
   if (!m || !user) return call('answerCallbackQuery', { callback_query_id: q.id });
@@ -157,7 +205,68 @@ async function onCallback(q) {
   if (chat && q.message) await call('editMessageText', { chat_id: chat, message_id: q.message.message_id, text: txt });
   else await send(chat, txt);
 }
+const ans = (q, text) => call('answerCallbackQuery', { callback_query_id: q.id, ...(text ? { text } : {}) });
+const editMsg = (q, text) => (q.message ? call('editMessageReplyMarkup', { chat_id: q.message.chat.id, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).then(() => send(q.message.chat.id, text)) : null);
+async function onTicketCallback(q, from, chat) {
+  const user = one('SELECT * FROM users WHERE tg_id=? AND active=1', from); if (!user) return ans(q);
+  const [k, a, b] = q.data.split(':'); const n = Date.now();
+  if (k === 'k' || k === 'tb' || k === 'tl') {
+    if (!['cs', 'admin'].includes(user.role)) return ans(q, 'مش مسموح');
+    const dr = one('SELECT * FROM bot_drafts WHERE id=? AND tg_id=?', Number(a), from); if (!dr) return ans(q, 'الطلب ده انتهى، ابعت السؤال تاني');
+    if (k === 'k') {
+      run('UPDATE bot_drafts SET kind=? WHERE id=?', b === 'problem' ? 'problem' : 'question', dr.id);
+      const bs = all('SELECT b.id, b.code, u.name uni, b.year FROM batches b JOIN universities u ON u.id=b.university_id WHERE b.active=1 ORDER BY u.code, b.code');
+      const rows = []; for (let i = 0; i < bs.length; i += 2) rows.push(bs.slice(i, i + 2).map(x => ({ text: `${x.code} · ${x.uni.replace('جامعة ', '')} ${x.year.replace('سنة ', '')}`.slice(0, 40), callback_data: `tb:${dr.id}:${x.id}` })));
+      await ans(q); return editMsg(q, 'أنهي دفعة؟').then(() => send(chat, 'اختار الدفعة:', { reply_markup: { inline_keyboard: rows } }));
+    }
+    if (k === 'tb') {
+      run('UPDATE bot_drafts SET batch_id=? WHERE id=?', Number(b), dr.id); await ans(q);
+      if (dr.kind === 'problem') return createFromDraft(q, user, { ...dr, batch_id: Number(b) }, null);
+      const ls = all('SELECT id, name FROM lectures WHERE batch_id=? ORDER BY sent_at DESC LIMIT 10', Number(b));
+      return editMsg(q, 'على أنهي محاضرة؟').then(() => send(chat, 'اختار المحاضرة:', { reply_markup: { inline_keyboard: [...ls.map(l => [{ text: `#${l.id} ${l.name}`.slice(0, 60), callback_data: `tl:${dr.id}:${l.id}` }]), [{ text: 'مش متأكد / من غير محاضرة', callback_data: `tl:${dr.id}:0` }]] } }));
+    }
+    await ans(q); return createFromDraft(q, user, dr, Number(b) || null);
+  }
+  const t = one('SELECT * FROM tickets WHERE id=?', Number(a)); if (!t) return ans(q, 'التذكرة مش موجودة');
+  const coordOk = user.role === 'admin' || (user.role === 'coordinator' && one('SELECT 1 FROM batches WHERE id=? AND coordinator_id=?', t.batch_id, user.id));
+  if (k === 'td') {
+    if (!coordOk) return ans(q, 'مش مسموح'); if (t.sent_doctor_at) return ans(q, 'اتبعت قبل كده');
+    const d = one("SELECT id, name, tg_id FROM users WHERE id=? AND role='doctor'", Number(b)); if (!d) return ans(q, 'الدكتور مش موجود');
+    if (!d.tg_id) return ans(q, `${d.name} مش رابط حسابه بالبوت`);
+    run('UPDATE tickets SET doctor_id=?, sent_doctor_at=? WHERE id=?', d.id, n, t.id);
+    await sendTicket(one('SELECT * FROM tickets WHERE id=?', t.id)); audit(user.id, 'ticket_send_doctor', { id: t.id });
+    await ans(q, 'اتبعت ✓'); return editMsg(q, `السؤال #${t.id} اتبعت لـ ${d.name} ✓\nهوصلك رده هنا أول ما يرد.`);
+  }
+  if (k === 'tr') {
+    if (!coordOk) return ans(q, 'مش مسموح'); if (!t.reply_at) return ans(q, 'الدكتور لسه مارد'); if (t.returned_at) return ans(q, 'اترجع قبل كده');
+    run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=?', n, user.id, t.id); audit(user.id, 'ticket_return', { id: t.id });
+    await notifyCsReturn(one('SELECT * FROM tickets WHERE id=?', t.id));
+    await ans(q, 'اترجع ✓'); return editMsg(q, `الرد على #${t.id} اترجع لخدمة العملاء ✓`);
+  }
+  if (k === 'tc') {
+    if (!['cs', 'admin'].includes(user.role)) return ans(q, 'مش مسموح'); if (t.closed_at) return ans(q, 'اتقفلت قبل كده');
+    run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, user.id, n, t.id); audit(user.id, 'ticket_deliver', { id: t.id });
+    await ans(q, 'اتقفلت ✓'); return editMsg(q, `السؤال #${t.id} اتقفل ✓`);
+  }
+  if (k === 'tp') {
+    if (!(coordOk || user.role === 'cs')) return ans(q, 'مش مسموح'); if (t.closed_at) return ans(q, 'اتقفلت قبل كده');
+    run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', `اتحلت (${user.name} من البوت)`, n, t.id);
+    await ans(q, 'اتقفلت ✓'); return editMsg(q, `المشكلة #${t.id} اتقفلت ✓`);
+  }
+  return ans(q);
+}
+async function createFromDraft(q, user, dr, lectureId) {
+  const lec = lectureId ? one('SELECT id, doctor_id FROM lectures WHERE id=? AND batch_id=?', lectureId, dr.batch_id) : null;
+  const body = dr.body || (dr.file_kind === 'voice' || dr.file_kind === 'audio' ? '[سؤال صوتي]' : '[سؤال مرفق]');
+  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,created_by,created_at,att_file_id,att_kind,att_mime,att_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    dr.kind || 'question', dr.batch_id, lec ? lec.id : null, lec ? lec.doctor_id : null, body, user.id, Date.now(), dr.file_id, dr.file_kind, dr.file_kind ? KIND_MIME[dr.file_kind] : null, dr.file_kind ? `${dr.file_kind}` : null);
+  run('DELETE FROM bot_drafts WHERE id=?', dr.id);
+  const t = one('SELECT * FROM tickets WHERE id=?', Number(r.lastInsertRowid));
+  await notifyCoordNew(t);
+  const c = one('SELECT u.name, u.tg_id FROM batches b LEFT JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id) || {};
+  return editMsg(q, `${t.kind === 'problem' ? 'المشكلة' : 'السؤال'} اتسجل #${t.id} ✓\nووصل لـ ${c.name || 'مسؤول الدفعة'}${c.tg_id ? '' : ' (مش رابط البوت، هيشوفه من اللوحة)'}.${t.kind === 'question' ? '\nهبعتلك الرد هنا أول ما يرجع.' : ''}`);
+}
 async function getFileUrl(fileId) { const f = await call('getFile', { file_id: fileId }); return f ? `${(process.env.TG_API || 'https://api.telegram.org')}/file/bot${process.env.BOT_TOKEN}/${f.file_path}` : null; }
 async function forwardFile(chat_id, fileId, kind, caption) { return call(kind === 'video' ? 'sendVideo' : 'sendDocument', { chat_id, [kind === 'video' ? 'video' : 'document']: fileId, caption }); }
 
-module.exports = { call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate, enabled, fmt, money, forwardFile, getFileUrl };
+module.exports = { notifyCoordNew, notifyCsReturn, notifyCoordReply, KIND_MIME, call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate, enabled, fmt, money, forwardFile, getFileUrl };

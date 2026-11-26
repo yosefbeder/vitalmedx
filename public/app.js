@@ -65,7 +65,9 @@ async function boot() {
   document.querySelectorAll('.brandname').forEach(b => (b.textContent = ME.brand)); document.title = ME.brand;
   $('#login').hidden = true; $('#app').hidden = false;
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.4.0</small>`;
+  let ib = document.getElementById('impbar'); if (ib) ib.remove();
+  if (ME.impersonated_by) { ib = document.createElement('div'); ib.id = 'impbar'; ib.style.cssText = 'z-index:20;background:#9a6408;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap'; ib.innerHTML = `<span>إنت داخل على حساب <b>${esc(ME.name)}</b> (${ROLE[ME.role]}) بصلاحياته. أي حاجة تعملها هتتسجل باسمه.</span><button class="btn sm" style="background:#fff;color:#000;border-color:#fff" id="impstop">رجوع لحسابي</button>`; document.querySelector('.content').prepend(ib); $('#impstop').onclick = async () => { await api('POST', '/api/impersonate-stop'); location.hash = 'settings'; await boot(); }; }
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.5.0</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });
@@ -78,13 +80,15 @@ async function render() {
 }
 async function refreshBell() { if (ME.role === 'cs') { $('#bell').hidden = true; return; } try { const h = await api('GET', '/api/home'); cache.alerts = h.alerts; $('#bell').innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>' + (h.alerts.length ? `<span>${h.alerts.length}</span>` : ''); } catch {} }
 function alertRows(list) {
-  return list.length ? `<table class="stack"><tbody>${list.map(a => `<tr><td>${esc(a.text)}</td><td class="n">${a.lecture_id ? `<button class="btn g sm" data-lec="${a.lecture_id}">فتح</button>` : a.ticket_id ? `<button class="btn g sm" data-tk="${a.ticket_id}">فتح</button>` : a.penalty_id ? '<a class="btn g sm" href="#penalties" data-close style="display:inline-flex;align-items:center;text-decoration:none">عرض</a>' : ''}</td></tr>`).join('')}</tbody></table>` : empty('مفيش تنبيهات');
+  return list.length ? `<table class="stack"><tbody>${list.map(a => `<tr><td>${esc(a.text)}</td><td class="n">${a.lecture_id ? `<button class="btn g sm" data-lec="${a.lecture_id}">فتح</button>` : a.ticket_id ? `<button class="btn g sm" data-tk="${a.ticket_id}">فتح</button>` : a.penalty_id ? '<a class="btn g sm" href="#penalties" data-close style="display:inline-flex;align-items:center;text-decoration:none">عرض</a>' : a.user_id ? `<button class="btn g sm" data-finu="${a.user_id}">عرض</button>` : ''}</td></tr>`).join('')}</tbody></table>` : empty('مفيش تنبيهات');
 }
 function openAlerts() { modal(`<b>التنبيهات (${(cache.alerts || []).length})</b>`, alertRows(cache.alerts || [])); }
 document.addEventListener('click', e => {
   const l = e.target.closest('[data-lec]'); if (l) { openLecture(Number(l.dataset.lec)); return; }
   const t = e.target.closest('[data-tk]'); if (t) { openTicket(Number(t.dataset.tk)); return; }
-  const d = e.target.closest('[data-doc]'); if (d) { openDoctor(Number(d.dataset.doc)); }
+  const d = e.target.closest('[data-doc]'); if (d) { openDoctor(Number(d.dataset.doc)); return; }
+  const im = e.target.closest('[data-imp2]'); if (im) { api('POST', '/api/impersonate/' + im.dataset.imp2).then(() => { dlg.close(); location.hash = ''; boot(); }); return; }
+  const fu = e.target.closest('[data-finu]'); if (fu) openFinance(Number(fu.dataset.finu));
 });
 
 /* ================= views ================= */
@@ -365,21 +369,44 @@ V.penalties = async () => {
 V.finance = async () => {
   const rows = await api('GET', '/api/finance');
   const tot = rows.reduce((s, r) => s + r.net, 0);
-  $('#main').innerHTML = `<h2>الحسابات · المستحق دلوقتي ${money(tot)}</h2><p class="note">الدكتور بيتحاسب على المحاضرات اللي سلّمها بس، واللي ماسلّمهاش بتترحّل للفترة اللي بعدها. التقفيل الشهري أو المعجّل بيقفل المبالغ دي.</p>
-  <div class="panel" style="padding:6px 10px"><table class="stack"><thead><tr><th>الاسم</th><th>الدور</th><th class="n">الأساسي</th><th class="n">بونص</th><th class="n">خصومات</th><th class="n">الصافي</th><th class="n">محاضرات</th><th></th></tr></thead><tbody>${rows.map(r => `<tr class="click" data-fin="${r.id}"><td><b>${esc(r.name)}</b></td><td>${ROLE[r.role]}</td><td class="n">${money(r.gross)}</td><td class="n">${money(r.bonus)}</td><td class="n${r.deductions ? ' red' : ''}">${money(r.deductions)}</td><td class="n"><b>${money(r.net)}</b></td><td class="n">${r.role === 'doctor' ? `${r.lectures}${r.pending ? ` <span class="mut">(+${r.pending} مفتوحة)</span>` : ''}` : '—'}</td><td><button class="btn g sm">فتح</button></td></tr>`).join('')}</tbody></table></div>`;
+  const groups = [['doctor', 'الدكاترة'], ['coordinator', 'مسؤولين الدفعات'], ['supervisor', 'المشرفين'], ['cs', 'خدمة العملاء']];
+  $('#main').innerHTML = `<h2>الحسابات · المستحق دلوقتي ${money(tot)}</h2><p class="note">كل مجموعة مرتبة من أعلى مستحقات لأقل. الدكتور بيتحاسب على المحاضرات اللي سلّمها بس، واللي ماسلّمهاش بتترحّل للفترة اللي بعدها.</p>
+  ${groups.map(([role, title]) => { const rs = rows.filter(r => r.role === role); if (!rs.length) return ''; const sub = rs.reduce((a, r) => a + r.net, 0);
+    return `<section class="panel" style="padding:10px 12px"><div class="row sp"><h3 style="margin:0">${title}</h3><b>${money(sub)}</b></div><table class="stack"><thead><tr><th class="n">#</th><th>الاسم</th><th class="n">الأساسي</th><th class="n">بونص</th><th class="n">خصومات</th><th class="n">الصافي</th>${role === 'doctor' ? '<th class="n">محاضرات</th>' : ''}<th>التحويل</th><th></th></tr></thead><tbody>${rs.map((r, i) => `<tr class="click" data-fin="${r.id}"><td class="n">${i + 1}</td><td><b>${esc(r.name)}</b></td><td class="n">${money(r.gross)}</td><td class="n">${money(r.bonus)}</td><td class="n${r.deductions ? ' red' : ''}">${money(r.deductions)}</td><td class="n"><b>${money(r.net)}</b></td>${role === 'doctor' ? `<td class="n">${r.lectures}${r.pending ? ` <span class="mut">(+${r.pending} مفتوحة)</span>` : ''}</td>` : ''}<td>${r.payout ? '<span class="ok">متسجلة ✓</span>' : '<span class="mut">مش متسجلة</span>'}</td><td><button class="btn g sm">فتح</button></td></tr>`).join('')}</tbody></table></section>`; }).join('')}`;
   document.querySelectorAll('[data-fin]').forEach(r => (r.onclick = () => openFinance(Number(r.dataset.fin))));
 };
+const PAYOUT = { vodafone: 'فودافون كاش', instapay: 'إنستاباي', bank: 'حساب بنكي' };
+const cp = v => v ? `<span class="row" style="gap:6px;display:inline-flex"><b dir="ltr">${esc(v)}</b><button type="button" class="btn g sm" data-copy="${esc(v)}" style="min-height:28px;padding:0 8px">نسخ</button></span>` : '—';
+function payoutHtml(list, mine) {
+  if (!list.length) return `<p class="mut">${mine ? 'لسه ماضفتش طريقة تحويل.' : 'مفيش طريقة تحويل متسجلة. اطلب منه يضيفها من صفحة حسابي.'}</p>`;
+  return list.map(p => { const all = p.kind === 'bank' ? `${p.name}\n${p.bank}\nIBAN: ${p.iban || ''}\nرقم الحساب: ${p.account || ''}` : `${PAYOUT[p.kind]}\n${p.number}\n${p.name}`;
+    return `<div class="panel" style="margin-bottom:8px"><div class="row sp"><b>${PAYOUT[p.kind]}</b><span>${mine ? `<button class="btn g sm" data-pdel="${p.id}">مسح</button>` : `<button type="button" class="btn g sm" data-copy="${esc(all)}">نسخ الكل</button>`}</span></div>
+    ${p.kind === 'bank' ? `<p>الاسم: ${cp(p.name)}</p><p>البنك: ${cp(p.bank)}</p><p>الأيبان: ${cp(p.iban)}</p><p>رقم الحساب: ${cp(p.account)}</p>` : `<p>الرقم: ${cp(p.number)}</p><p>الاسم: ${cp(p.name)}</p>`}</div>`; }).join('');
+}
+document.addEventListener('click', async e => { const b = e.target.closest('[data-copy]'); if (!b) return; e.stopPropagation(); try { await navigator.clipboard.writeText(b.dataset.copy.replace(/\\n/g, '\n')); toast('اتنسخ ✓'); } catch { toast('النسخ مش متاح، حدد النص وانسخه'); } }, true);
+const waNum = n => { n = String(n || '').replace(/[^\d]/g, ''); if (/^0\d{10}$/.test(n)) n = '20' + n.slice(1); return n; };
+function contactBtns(u) {
+  const b = [];
+  if (u.whatsapp) b.push(`<a class="btn g sm" style="display:inline-flex;align-items:center;text-decoration:none" href="https://wa.me/${waNum(u.whatsapp)}" target="_blank" rel="noopener">واتساب ${esc(u.whatsapp)}</a>`);
+  if (u.tg_username) b.push(`<a class="btn g sm" style="display:inline-flex;align-items:center;text-decoration:none" href="https://t.me/${encodeURIComponent(u.tg_username)}" target="_blank" rel="noopener">تليجرام @${esc(u.tg_username)}</a>`);
+  return b.length ? `<div class="row">${b.join('')}</div>` : '<p class="mut">مفيش بيانات تواصل متسجلة.</p>';
+}
 function finBody(f, admin) {
   return `<div class="kpis" style="margin-top:0">${kpi(money(f.gross), f.user.role === 'doctor' ? 'المحاضرات' : 'الأساسي')}${kpi(money(f.bonus), 'بونص')}${kpi(money(f.deductions), 'خصومات', f.deductions)}${kpi(money(f.net), 'الصافي')}</div>
   ${f.user.role === 'doctor' ? `<p>${Object.entries(f.byType).map(([t, x]) => `${TY()[t]}: ${x.n} محاضرة = ${money(x.sum)}`).join(' · ') || 'مفيش محاضرات مسلّمة لسه'}${f.pendingLecs ? ` <span class="mut">· ${f.pendingLecs} محاضرة لسه ماتسلمتش وهتتحسب لما تتسلم</span>` : ''}</p>` : `<p>المرتب: ${money(f.salary)}</p>`}
   ${f.extra.length ? `<p>مستحقات إضافية: ${f.extra.map(x => `${money(x.amount)} (${esc(x.note || '')})${admin ? ` <button class="btn sm g" data-del="extra/${x.id}">مسح</button>` : ''}`).join('، ')}</p>` : ''}${f.bons.length ? `<p>بونص: ${f.bons.map(x => `${money(x.amount)} (${esc(x.note || '')})${admin ? ` <button class="btn sm g" data-del="bonuses/${x.id}">مسح</button>` : ''}`).join('، ')}</p>` : ''}${f.pens.length ? `<p class="red">خصومات: ${f.pens.map(x => `${money(x.amount)} (${esc(x.reason)})`).join('، ')}</p>` : ''}
   ${f.lecs.length ? `<details><summary>تفاصيل المحاضرات (${f.lecs.length})</summary><table class="stack"><tbody>${f.lecs.map(l => `<tr><td>#${l.id} ${esc(l.name)}</td><td>${TY()[l.type]}</td><td class="n">${money(l.price)}</td><td>${fmt(l.delivered_at)}</td></tr>`).join('')}</tbody></table></details>` : ''}
+  ${admin ? `<p><button type="button" class="btn g sm" data-imp2="${f.user.id}">ادخل على حسابه</button></p><h3 style="margin-top:16px">طريقة التحويل</h3>${payoutHtml(f.payout || [], false)}
+  <h3 style="margin-top:16px">التواصل</h3>${contactBtns(f.user)}
+  <form id="trf" class="panel" style="margin-top:10px"><h3>إرسال إيصال التحويل أو ملاحظة</h3><p class="mut">هيوصله على البوت مباشرة${f.user.linked ? '' : ' <span class="red">(مش رابط البوت، فمش هيوصله)</span>'}.</p><label>إيصال التحويل (صورة أو PDF)<input type="file" name="receipt" accept="image/*,.pdf"></label><label>ملاحظة (أو المشكلة في التحويل)<textarea name="note" placeholder="مثلاً: اتحوّل 2400 على فودافون كاش، أو: الرقم ده مش شغال ابعتلي رقم تاني"></textarea></label><button class="btn a">إرسال</button></form>
+  ${(f.transfers || []).length ? `<h3>رسايل الحسابات اللي اتبعتت</h3>${f.transfers.map(t => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(t.created_at)}</span> ${t.delivered ? '<span class="ok">وصلت ✓</span>' : '<span class="red">ماوصلتش</span>'}${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}</div>`).join('')}` : ''}` : ''}
   <h3 style="margin-top:16px">التقفيلات السابقة</h3>${f.settlements.length ? `<table class="stack"><thead><tr><th>الفترة</th><th>النوع</th><th class="n">الصافي</th><th>الدفع</th></tr></thead><tbody>${f.settlements.map(s => `<tr><td>${esc(s.period)}</td><td>${s.kind === 'early' ? 'معجّل' : 'شهري'}</td><td class="n">${money(s.net)}</td><td>${s.paid_at ? `<span class="ok">اتدفع ${fmt(s.paid_at)}</span>` : admin ? `<button class="btn sm g" data-paid="${s.id}">تم الدفع</button>` : 'لسه'}${admin ? ` <button class="btn sm g" data-del="settlements/${s.id}">إلغاء التقفيل</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="mut">مفيش</p>'}`;
 }
 async function openFinance(id) {
   const f = await api('GET', '/api/finance/' + id);
   modal(`<b>${esc(f.user.name)}</b> <span class="mut">${ROLE[f.user.role]}</span>`, finBody(f, true) + `<div class="panel" style="margin-top:14px"><h3>إضافة</h3><form id="bf" class="row"><select name="what" style="width:auto">${opts([['bonuses', 'بونص'], ['extra', 'مستحق إضافي (زي مرتب متغير)']], 'bonuses')}</select><input name="amount" type="number" step="0.01" placeholder="المبلغ" required style="width:9em"><input name="note" placeholder="ملاحظة" style="flex:1"><button class="btn sm">إضافة</button></form></div>
   <div class="panel"><h3>التقفيل</h3><div class="row"><input id="per" value="${esc(ME.today.slice(0, 7))}" style="width:9em" dir="ltr"><button class="btn a" id="sm">تقفيل شهري (${money(f.net)})</button><button class="btn g" id="se">تقفيل معجّل</button></div><p class="mut">التقفيل بيقفل كل المبالغ اللي فوق، وأي حاجة بعد كده بتدخل في الفترة الجاية.</p></div>`);
+  $('#trf').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target); if (!String(fd.get('note')).trim() && !(fd.get('receipt') && fd.get('receipt').size)) return toast('اكتب ملاحظة أو ارفع الإيصال'); const btn = e.target.querySelector('button'); btn.disabled = true; try { const r = await api('POST', `/api/finance/${id}/message`, fd); toast(r.delivered ? 'اتبعت على البوت ✓' : 'اتسجلت بس ماوصلتش (مش رابط البوت)'); openFinance(id); } catch { btn.disabled = false; } };
   $('#bf').onsubmit = async e => { e.preventDefault(); const x = Object.fromEntries(new FormData(e.target)); await api('POST', '/api/' + x.what, { user_id: id, amount: x.amount, note: x.note }); toast('اتضاف'); openFinance(id); V.finance(); };
   const settle = async kind => { await api('POST', `/api/finance/${id}/settle`, { kind, period: $('#per').value }); toast('اتقفل'); openFinance(id); V.finance(); };
   $('#sm').onclick = () => settle('month'); $('#se').onclick = () => settle('early');
@@ -423,8 +450,22 @@ V.account = async () => {
   $('#main').innerHTML = `<h2>${esc(ME.name)}</h2><p class="note">${esc(ME.email)} · ${ROLE[ME.role]}</p>${rc}
   <section class="panel"><h3>بوت تليجرام</h3>${ME.linked ? '<p class="ok">حسابك مربوط بالبوت ✓</p>' : `<p>افتح بوت ${esc(ME.brand)} على تليجرام، ودوس Start، وابعت الكود ده:</p><p style="font-size:22px"><code>${esc(ME.link_code || '')}</code></p>`}</section>
   ${fin}
+  ${ME.role !== 'admin' ? `<form id="ctf" class="panel"><h3>بيانات التواصل</h3><p class="mut">الإدارة هتكلمك عليها لو فيه أي حاجة في التحويل.</p><div class="two"><label>يوزر التليجرام<input name="tg_username" dir="ltr" placeholder="@username" value="${esc(ME.tg_username ? '@' + ME.tg_username : '')}"></label><label>رقم الواتساب<input name="whatsapp" dir="ltr" inputmode="tel" placeholder="01xxxxxxxxx" value="${esc(ME.whatsapp || '')}"></label></div><button class="btn sm">حفظ</button></form>
+  <section class="panel" id="trl" hidden><h3>رسايل الحسابات</h3><div id="trc"></div></section>` : ''}
+  ${ME.role !== 'admin' ? `<section class="panel"><h3>طرق استلام الفلوس</h3><p class="mut">الإدارة هتحوّلك على الطريقة اللي هتكتبها هنا. تقدر تضيف أكتر من طريقة.</p><div id="pyl"></div>
+  <details><summary><b>+ إضافة طريقة تحويل</b></summary><form id="pyf" style="margin-top:10px"><label>الطريقة<select name="kind" id="pyk">${opts(Object.entries(PAYOUT), 'vodafone')}</select></label>
+  <label>الاسم (زي ما هو في الحساب)<input name="name" required></label><div id="pyn"><label>الرقم<input name="number" dir="ltr" inputmode="tel"></label></div>
+  <div id="pyb" hidden><label>اسم البنك<input name="bank"></label><label>الأيبان (IBAN)<input name="iban" dir="ltr"></label><label>رقم الحساب<input name="account" dir="ltr"></label></div><button class="btn a">حفظ</button></form></details></section>` : ''}
   <form id="pw" class="panel"><h3>تغيير كلمة المرور</h3><div class="two"><label>الحالية<input type="password" name="old" required></label><label>الجديدة (8 حروف على الأقل)<input type="password" name="new" minlength="8" required></label></div><button class="btn sm">تغيير</button></form>`;
   $('#pw').onsubmit = async e => { e.preventDefault(); await api('POST', '/api/me/password', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('اتغيرت'); };
+  if ($('#ctf')) { $('#ctf').onsubmit = async e => { e.preventDefault(); await api('PUT', '/api/me/contact', Object.fromEntries(new FormData(e.target))); toast('اتحفظت ✓'); ME = await api('GET', '/api/me'); };
+    api('GET', '/api/me/transfers').then(ts => { if (!ts.length) return; $('#trl').hidden = false; $('#trc').innerHTML = ts.map(t => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(t.created_at)}</span>${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}</div>`).join(''); }); }
+  if ($('#pyf')) {
+    const loadPy = async () => { $('#pyl').innerHTML = payoutHtml(await api('GET', '/api/me/payout'), true); document.querySelectorAll('[data-pdel]').forEach(b => (b.onclick = async () => { await api('DELETE', '/api/me/payout/' + b.dataset.pdel); toast('اتمسحت'); loadPy(); })); };
+    const tog = () => { const bank = $('#pyk').value === 'bank'; $('#pyb').hidden = !bank; $('#pyn').hidden = bank; };
+    $('#pyk').onchange = tog; tog(); loadPy();
+    $('#pyf').onsubmit = async e => { e.preventDefault(); await api('POST', '/api/me/payout', Object.fromEntries(new FormData(e.target))); e.target.reset(); tog(); toast('اتحفظت ✓'); loadPy(); };
+  }
 };
 
 /* ----- settings (admin) ----- */
@@ -436,7 +477,7 @@ V.settings = async () => {
     const us = await api('GET', '/api/users');
     body = `<details class="panel"><summary><b>إضافة مستخدم</b></summary><form id="uf" style="margin-top:10px"><div class="two"><label>الاسم<input name="name" required></label><label>الإيميل<input name="email" type="email" dir="ltr" required></label></div><div class="two"><label>الصلاحية<select name="role" id="ur">${opts(Object.entries(ROLE), 'doctor')}</select></label><label>كلمة المرور (8+)<input name="password" minlength="8" required dir="ltr"></label></div><div class="two"><label>الموبايل<input name="phone" dir="ltr"></label><label id="sal">المرتب الشهري<input name="salary" type="number" step="0.01" value="0"></label></div>
     <div id="dcf" class="four"><label>سعر النظري<input type="number" step="0.01" name="price_theory" value="0"></label><label>سعر العملي<input type="number" step="0.01" name="price_practical" value="0"></label><label>سعر المراجعة<input type="number" step="0.01" name="price_revision" value="0"></label><label>الطاقة اليومية<input type="number" name="capacity" value="3"></label></div><button class="btn a">إضافة</button></form></details>
-    <div class="panel" style="padding:6px 10px"><table class="stack"><thead><tr><th>الاسم</th><th>الدور</th><th>الإيميل</th><th>البوت</th><th></th></tr></thead><tbody>${us.map(u => `<tr${u.active ? '' : ' style="opacity:.5"'}><td><b>${esc(u.name)}</b>${u.role !== 'doctor' && u.role !== 'admin' ? `<div class="mut">مرتب ${money(u.salary)}</div>` : ''}</td><td>${ROLE[u.role]}</td><td dir="ltr">${esc(u.email)}</td><td>${u.linked ? '<span class="ok">مربوط ✓</span>' : `<code>${esc(u.link_code)}</code>`}</td><td><button class="btn g sm" data-ue="${u.id}">تعديل</button></td></tr>`).join('')}</tbody></table></div>`;
+    <div class="panel" style="padding:6px 10px"><table class="stack"><thead><tr><th>الاسم</th><th>الدور</th><th>الإيميل</th><th>البوت</th><th></th></tr></thead><tbody>${us.map(u => `<tr${u.active ? '' : ' style="opacity:.5"'}><td><b>${esc(u.name)}</b>${u.role !== 'doctor' && u.role !== 'admin' ? `<div class="mut">مرتب ${money(u.salary)}</div>` : ''}</td><td>${ROLE[u.role]}</td><td dir="ltr">${esc(u.email)}</td><td>${u.linked ? '<span class="ok">مربوط ✓</span>' : `<code>${esc(u.link_code)}</code>`}</td><td><button class="btn g sm" data-ue="${u.id}">تعديل</button>${u.role !== 'admin' && u.active ? ` <button class="btn g sm" data-imp="${u.id}">ادخل كـ ${esc(u.name.split(' ').slice(0, 2).join(' '))}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
     cache.users = us;
   } else if (ST === 'batches') {
     const [unis, bs, us] = await Promise.all([api('GET', '/api/universities'), api('GET', '/api/batches'), api('GET', '/api/users')]);
@@ -455,6 +496,7 @@ V.settings = async () => {
   document.querySelectorAll('[data-st]').forEach(b => (b.onclick = () => { ST = b.dataset.st; V.settings(); }));
   if ($('#uf')) { const tog = () => { const d = $('#ur').value === 'doctor'; $('#dcf').hidden = !d; $('#sal').hidden = d || $('#ur').value === 'admin'; }; $('#ur').onchange = tog; tog();
     $('#uf').onsubmit = async e => { e.preventDefault(); const r = await api('POST', '/api/users', Object.fromEntries(new FormData(e.target))); toast('اتضاف · كود البوت ' + r.link_code); V.settings(); }; }
+  document.querySelectorAll('[data-imp]').forEach(b => (b.onclick = async () => { await api('POST', '/api/impersonate/' + b.dataset.imp); location.hash = ''; await boot(); }));
   document.querySelectorAll('[data-ue]').forEach(b => (b.onclick = () => {
     const u = cache.users.find(x => x.id === Number(b.dataset.ue));
     modal(`<b>${esc(u.name)}</b>`, `<form id="ef"><div class="two"><label>الاسم<input name="name" value="${esc(u.name)}"></label><label>الإيميل<input name="email" dir="ltr" value="${esc(u.email)}"></label></div><div class="two"><label>الموبايل<input name="phone" dir="ltr" value="${esc(u.phone || '')}"></label>${u.role !== 'doctor' ? `<label>المرتب<input name="salary" type="number" step="0.01" value="${u.salary}"></label>` : ''}</div><label>كلمة مرور جديدة (سيبها فاضية لو مش عايز تغيّر)<input name="password" dir="ltr" minlength="8"></label><label class="chk"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب شغال</label><label class="chk"><input type="checkbox" name="new_code"> كود ربط جديد (بيفك ربط البوت الحالي)</label><div class="row sp"><button class="btn">حفظ</button><button type="button" class="btn r sm" id="udel">مسح المستخدم</button></div></form>`);

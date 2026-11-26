@@ -22,6 +22,15 @@ function makeCookie(userId) {
   return `sid=${v}.${sign(v)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${DAYS * 86400}${secure}`;
 }
 const clearCookie = () => 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0';
+function impCookie(adminId) { const v = `${adminId}.${Date.now() + 864e5}`; const secure = process.env.COOKIE_SECURE === '0' ? '' : '; Secure'; return `imp=${v}.${sign('imp:' + v)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`; }
+const clearImp = () => 'imp=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0';
+function impFromReq(req) {
+  const m = /(?:^|;\s*)imp=([^;]+)/.exec(req.headers.cookie || ''); if (!m) return null;
+  const parts = m[1].split('.'); if (parts.length !== 3) return null;
+  const v = parts[0] + '.' + parts[1], sig = Buffer.from(parts[2]), exp = Buffer.from(sign('imp:' + v));
+  if (sig.length !== exp.length || !crypto.timingSafeEqual(sig, exp) || Number(parts[1]) < Date.now()) return null;
+  const a = one("SELECT id, name FROM users WHERE id=? AND role='admin' AND active=1", Number(parts[0])); return a || null;
+}
 function userFromReq(req) {
   const m = /(?:^|;\s*)sid=([^;]+)/.exec(req.headers.cookie || '');
   if (!m) return null;
@@ -36,4 +45,4 @@ function userFromReq(req) {
 }
 const linkCode = () => 'VM-' + Array.from(crypto.randomBytes(5), b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
 
-module.exports = { hash, verify, makeCookie, clearCookie, userFromReq, linkCode };
+module.exports = { hash, verify, makeCookie, clearCookie, userFromReq, linkCode, impCookie, clearImp, impFromReq };
