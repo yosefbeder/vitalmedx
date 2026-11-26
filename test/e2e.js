@@ -356,6 +356,14 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const ls_ = await sup.req('GET', '/api/lectures/' + LS.id); ok(/المشرف/.test(ls_.uploaded_by_name) && /المشرف/.test(ls_.ok_by_name) && ls_.upload_late, 'lecture shows supervisor did it');
     ok((await doc.req('GET', '/api/lectures/' + LS.id)).uploaded_by_name === undefined, 'doctor not shown who uploaded');
     await admin.req('PATCH', '/api/lectures/' + LS.id, { action: 'cancel' });
+    // supervisor has every coordinator permission on his batches
+    const SL = await sup.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'revision', name: 'Sent by supervisor' }); ok(SL.id, 'supervisor sends lecture');
+    await sup.req('PATCH', '/api/lectures/' + SL.id, { action: 'price', price: 123 }); ok((await sup.req('GET', '/api/lectures/' + SL.id)).price === 123, 'supervisor edits price');
+    await sup.req('PATCH', '/api/lectures/' + SL.id, { action: 'cancel' }).then(() => ok(false), e => ok(e.status === 403, 'delete stays admin-only'));
+    ok((await sup.req('POST', '/api/tickets', { kind: 'problem', batch_id: b11.id, body: 'مشكلة من المشرف' })).id, 'supervisor opens ticket');
+    const supId = (await sup.req('GET', '/api/me')).id, notMine = (await admin.req('GET', '/api/batches')).find(b => b.supervisor_id && b.supervisor_id !== supId);
+    if (notMine) await sup.req('POST', '/api/lectures', { batch_id: notMine.id, doctor_id: d.id, type: 'theory', name: 'x' }).then(() => ok(false), e => ok(e.status === 403, 'supervisor limited to his batches'));
+    await admin.req('PATCH', '/api/lectures/' + SL.id, { action: 'cancel' });
     // configurable reminders before deadline + one late alert per day
     await admin.req('PUT', '/api/settings', { remind_before_hours: '6, 3, 1' });
     await admin.req('PUT', '/api/settings', { upload_alert_minutes: '6,x' }).then(() => ok(false), e => ok(e.status === 400, 'alert list validated'));

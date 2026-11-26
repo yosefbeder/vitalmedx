@@ -77,7 +77,7 @@ async function boot() {
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
   let ib = document.getElementById('impbar'); if (ib) ib.remove();
   if (ME.impersonated_by) { ib = document.createElement('div'); ib.id = 'impbar'; ib.style.cssText = 'z-index:20;background:#9a6408;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap'; ib.innerHTML = `<span>إنت داخل على حساب <b>${esc(ME.name)}</b> (${ROLE[ME.role]}) بصلاحياته. أي حاجة تعملها هتتسجل باسمه.</span><button class="btn sm" style="background:#fff;color:#000;border-color:#fff" id="impstop">رجوع لحسابي</button>`; document.querySelector('.content').prepend(ib); $('#impstop').onclick = async () => { await api('POST', '/api/impersonate-stop'); location.hash = 'settings'; await boot(); }; }
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.7.0</small>`;
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.7.1</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });
@@ -140,7 +140,7 @@ async function doctorHome(h) {
 /* ----- universities / batches ----- */
 function batchTable(bs, compact) {
   if (!bs.length) return empty('مفيش دفعات');
-  const canExam = ['admin', 'coordinator'].includes(ME.role);
+  const canExam = ['admin', 'coordinator', 'supervisor'].includes(ME.role);
   return `<table class="stack"><thead><tr><th>الدفعة</th>${compact ? '' : '<th>المسؤول</th><th>المشرف</th>'}<th class="n">الاشتراكات</th><th class="n">متأخر</th><th class="n">مشاكل</th><th>أقرب امتحان</th><th class="n">محاضرات</th><th class="n">مراجعات</th><th class="n">ملفات أسئلة</th>${canExam ? '<th></th>' : ''}</tr></thead><tbody>${bs.map(b => {
     const trend = b.subs != null && b.subs_prev != null ? (b.subs > b.subs_prev ? ' <span class="ok">▲</span>' : b.subs < b.subs_prev ? ' <span class="red">▼</span>' : '') : '';
     return `<tr><td><b dir="ltr">${esc(b.code)}</b><div class="mut">${esc(b.uni)} · ${esc(b.year)}</div></td>${compact ? '' : `<td>${esc(b.coordinator || '—')}</td><td>${esc(b.supervisor || '—')}</td>`}<td class="n">${b.subs ?? '—'}${b.expected_subs ? ` / ${b.expected_subs}` : ''}${trend}</td><td class="n${b.lateNow ? ' red' : ''}">${b.lateNow}</td><td class="n${b.problems ? ' red' : ''}">${b.problems}</td><td>${b.exam_date ? `${esc(b.exam_date)}<div class="mut${b.exam_alert ? ' red' : ''}">${b.exam_days >= 0 ? `بعد ${b.exam_days} يوم` : 'عدّى'}${b.exam_alert ? ' · مفيش مراجعات' : ''}</div>` : '—'}</td><td class="n">${b.lectures}</td><td class="n">${b.revisions}</td><td class="n">${b.qfiles}</td>${canExam ? `<td><button class="btn g sm" data-exam="${b.id}">الامتحان</button></td>` : ''}</tr>`;
@@ -176,7 +176,7 @@ function bindExam() {
 const LF = { state: '', batch: '', doctor: '', type: '', q: '', priority: '', sort: '' };
 V.lectures = async () => {
   const [bs, ds] = await Promise.all([api('GET', '/api/batches'), api('GET', '/api/doctors')]); cache.batches = bs; cache.doctors = ds;
-  const canSend = ['admin', 'coordinator'].includes(ME.role);
+  const canSend = ['admin', 'coordinator', 'supervisor'].includes(ME.role);
   $('#main').innerHTML = `<div class="row sp"><h2>المحاضرات</h2>${canSend ? '<button class="btn a" id="newlec">+ إرسال محاضرة</button>' : ''}</div>
   <p class="note">كل محاضرة ليها تايمر ${esc(ME.settings.deadline_hours)} ساعة للفيديو وتايمر منفصل لملف الأسئلة، والرفع خلال ${esc(ME.settings.upload_minutes)} دقيقة من الاعتماد.</p>
   <div class="filters"><input id="fq" placeholder="بحث بالاسم أو الرقم" value="${esc(LF.q)}"><select id="fs">${opts(Object.entries(LS).map(([k, v]) => [k, v[0]]), LF.state, 'كل الحالات')}</select><select id="fb">${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni]), LF.batch, 'كل الدفعات')}</select><select id="fd">${opts(ds.map(d => [d.id, d.name]), LF.doctor, 'كل الدكاترة')}</select><select id="ft">${opts(Object.entries(TY()), LF.type, 'كل الأنواع')}</select><select id="fp">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), LF.priority, 'كل الأولويات')}</select><select id="fo">${opts([['priority', 'الأهم أولاً']], LF.sort, 'الأحدث أولاً')}</select></div><div id="lt"></div>`;
@@ -212,7 +212,7 @@ function sendLectureForm() {
   };
 }
 async function openLecture(id) {
-  const l = await api('GET', '/api/lectures/' + id), coord = ['admin', 'coordinator'].includes(ME.role), staff = coord || ME.role === 'supervisor', boss = ['admin', 'supervisor'].includes(ME.role), canPri = staff || ME.role === 'supervisor';
+  const l = await api('GET', '/api/lectures/' + id), coord = ['admin', 'coordinator', 'supervisor'].includes(ME.role), staff = coord, boss = ['admin', 'supervisor'].includes(ME.role), canPri = staff || ME.role === 'supervisor';
   const both = l.video_at && l.q_at, approved = l.video_ok_at && l.q_ok_at;
   const log = [[l.sent_at, 'اتبعتت للدكتور عبر البوت'], l.video_at && [l.video_at, 'الفيديو اتسلم' + (l.v_late ? ' (متأخر)' : '')], l.video_ok_at && [l.video_ok_at, 'الفيديو اتعتمد' + (l.ok_by_name ? ` (بواسطة ${l.ok_by_name})` : '')], l.q_at && [l.q_at, 'ملف الأسئلة اتسلم' + (l.q_late ? ' (متأخر)' : '')], l.q_ok_at && [l.q_ok_at, 'ملف الأسئلة اتعتمد' + (l.ok_by_name ? ` (بواسطة ${l.ok_by_name})` : '')], l.uploaded_at && [l.uploaded_at, 'اترفعت على Nerdio والقناة' + (l.uploaded_by_name ? ` (بواسطة ${l.uploaded_by_name})` : '') + (l.upload_late ? ` · متأخر على المسؤول ${l.coordinator || ''}${l.upload_both_late ? ' والمشرف' : ''}` : '')], ...(l.price_log || []).map(p => [p.at, `السعر اتغير من ${money(p.old)} لـ ${money(p.new)} (${p.by_name})`])].filter(Boolean).sort((a, b) => a[0] - b[0]);
   const ni = (n, lab, m) => `<label>${lab} (من ${m})<input type="number" name="${n}" min="0" max="${m}" value="${l[n] ?? ''}" ${approved ? '' : 'disabled'}></label>`;

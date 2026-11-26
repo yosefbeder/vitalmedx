@@ -11,7 +11,7 @@ const PDF = require('./pdf');
 const { DATA_DIR } = require('./db');
 const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -197,7 +197,7 @@ function doctorRow(id, u) {
 }
 route('GET', '/api/doctors', async ({ u }) => {
   need(u, 'admin', 'supervisor', 'coordinator', 'cs');
-  const ids = u.role === 'admin' || u.role === 'coordinator' || u.role === 'cs' ? all("SELECT id FROM users WHERE role='doctor' AND active=1").map(r => r.id) : L.scopedDoctorIds(u);
+  const ids = ['admin', 'coordinator', 'supervisor', 'cs'].includes(u.role) ? all("SELECT id FROM users WHERE role='doctor' AND active=1").map(r => r.id) : L.scopedDoctorIds(u);
   return ids.map(id => doctorRow(id, u)).filter(Boolean);
 });
 route('GET', '/api/doctors/:id', async ({ u, p }) => {
@@ -257,7 +257,7 @@ route('GET', '/api/lectures/:id', async ({ u, p }) => {
   return d;
 });
 route('POST', '/api/lectures', async ({ u, body, files }) => {
-  need(u, 'admin', 'coordinator');
+  need(u, 'admin', 'coordinator', 'supervisor');
   const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'الدفعة دي مش بتاعتك');
   const did = req1(int(body.doctor_id), 'الدكتور'); const doc = one("SELECT u.*, d.* FROM users u JOIN doctors d ON d.user_id=u.id WHERE u.id=? AND u.active=1", did) || fail(400, 'الدكتور مش موجود');
   const type = body.type in L.TYPES ? body.type : fail(400, 'النوع غلط');
@@ -277,8 +277,7 @@ route('POST', '/api/lectures', async ({ u, body, files }) => {
 });
 route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
   const l = one('SELECT * FROM lectures WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
-  const supOk = ['priority', 'excuse', 'unexcuse', 'approve', 'uploaded', 'forward', 'exempt_q', 'rate'].includes(body.action);
-  if (!canBatch(u, l.batch_id) || !(['admin', 'coordinator'].includes(u.role) || (supOk && u.role === 'supervisor'))) fail(403, 'مش مسموح');
+  if (!canBatch(u, l.batch_id) || !['admin', 'coordinator', 'supervisor'].includes(u.role)) fail(403, 'مش مسموح'); // supervisor = everything the coordinator can do, on his batches
   if ((body.action === 'excuse' || body.action === 'unexcuse') && !['admin', 'supervisor'].includes(u.role)) fail(403, 'استثناء التأخير للمشرف والأدمن بس');
   const t = Date.now();
   switch (body.action) {
@@ -326,7 +325,7 @@ route('GET', '/api/tickets', async ({ u, q }) => {
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
 route('POST', '/api/tickets', async ({ u, body, files }) => {
-  need(u, 'admin', 'cs', 'coordinator');
+  need(u, 'admin', 'cs', 'coordinator', 'supervisor');
   const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'مش مسموح');
   const kind = body.kind === 'problem' ? 'problem' : 'question';
   const lid = int(body.lecture_id); const lec = lid ? one('SELECT * FROM lectures WHERE id=? AND batch_id=?', lid, bid) : null;
