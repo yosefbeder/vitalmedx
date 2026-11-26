@@ -147,9 +147,9 @@ function monthWin(m) { // 'YYYY-MM'
 }
 
 /* ---------- finance ---------- */
-function payable(userId, until = now()) {
+function payable(userId, until = now(), sentBefore = 9e15) { // sentBefore: month-close = only lectures sent before the month ends
   const u = one('SELECT id, role, salary FROM users WHERE id=?', userId);
-  const lecs = u.role === 'doctor' ? all('SELECT id, name, type, price, batch_id, sent_at, video_at, q_at FROM lectures WHERE doctor_id=? AND settlement_id IS NULL AND video_at IS NOT NULL AND q_at IS NOT NULL AND MAX(video_at,q_at)<=?', userId, until) : [];
+  const lecs = u.role === 'doctor' ? all('SELECT id, name, type, price, batch_id, sent_at, video_at, q_at FROM lectures WHERE doctor_id=? AND settlement_id IS NULL AND video_at IS NOT NULL AND q_at IS NOT NULL AND MAX(video_at,q_at)<=? AND sent_at<?', userId, until, sentBefore) : [];
   const pens = all("SELECT id, reason, amount FROM penalties WHERE user_id=? AND status='approved' AND settlement_id IS NULL AND amount>0", userId);
   const bons = all('SELECT id, note, amount FROM bonuses WHERE user_id=? AND settlement_id IS NULL', userId);
   const extra = all('SELECT id, note, amount FROM extra_pay WHERE user_id=? AND settlement_id IS NULL', userId);
@@ -206,6 +206,8 @@ function alerts(u) {
   if (u.role === 'admin') {
     for (const p of all("SELECT p.id, u.name FROM penalties p JOIN users u ON u.id=p.user_id WHERE p.status='proposed'")) out.push({ type: 'penalty', penalty_id: p.id, text: `قرار على ${p.name} مستني اعتمادك`, at: 0 });
     for (const p of all("SELECT p.id, u.name FROM penalties p JOIN users u ON u.id=p.user_id WHERE p.objection IS NOT NULL AND p.reply IS NULL")) out.push({ type: 'penalty', penalty_id: p.id, text: `${p.name} قدّم اعتراض`, at: 0 });
+    for (const t of all("SELECT t.user_id, t.problem, t.problem_at, u.name FROM transfer_msgs t JOIN users u ON u.id=t.user_id WHERE t.problem IS NOT NULL AND t.confirmed_at IS NULL AND t.problem_at>?", now() - 7 * DAY)) out.push({ type: 'transfer', user_id: t.user_id, text: `${t.name}: مشكلة في التحويل · ${t.problem.slice(0, 60)}`, at: t.problem_at });
+    for (const t of all("SELECT t.user_id, t.created_at, u.name FROM transfer_msgs t JOIN users u ON u.id=t.user_id WHERE t.needs_confirm=1 AND t.confirmed_at IS NULL AND t.problem IS NULL AND t.created_at<? AND t.created_at>?", now() - DAY, now() - 14 * DAY)) out.push({ type: 'transfer', user_id: t.user_id, text: `${t.name} لسه ماأكدش استلام التحويل`, at: t.created_at });
     for (const a of all("SELECT a.user_id, a.detail, a.at, u.name FROM audit a JOIN users u ON u.id=a.user_id WHERE a.action='profile_change' AND a.at>? ORDER BY a.at DESC LIMIT 20", now() - 3 * DAY)) out.push({ type: 'profile', user_id: a.user_id, text: `${a.name} ${JSON.parse(a.detail || '{}').what || 'غيّر بياناته'}`, at: a.at });
   }
   return out.sort((a, b) => a.at - b.at);
@@ -232,6 +234,72 @@ function aiPrompt(t = now()) {
   L.push('', 'المطلوب:', '1. أهم 3 حاجات حصلت النهارده.', '2. الاتجاهات: إيه اللي بيتحسن وإيه اللي بيسوء.', '3. المخاطر الجاية: امتحانات قربت ومفيش مراجعات، دفعات اشتراكاتها تحت المتوقع، دكاترة تأخيرهم بيتكرر.', '4. مين محتاج تدخل مني، بالاسم والسبب.', '5. من 3 لـ 5 إجراءات محددة أعملها بكرة.', '', 'القواعد: اعتمد على الأرقام اللي فوق بس، ولو فيه بيانات ناقصة قول. اكتب باختصار وبالعامية المصرية.');
   return L.join('\n');
 }
+/* ---------- auto daily report ---------- */
+function dailyReport(u, t = now()) {
+  const t0 = dayStart(t), t1 = t0 + DAY, T = Math.min(t1, now()), D = deadline(), day = dayStr(t);
+  const ids = batchIds(u), bw = ids ? `batch_id IN (${inList(ids)})` : '1=1';
+  const names = Object.fromEntries(all('SELECT id, name FROM users').map(x => [x.id, x.name]));
+  const bmap = Object.fromEntries(all('SELECT id, code, coordinator_id, supervisor_id FROM batches').map(b => [b.id, b]));
+  const who = bid => { const b = bmap[bid] || {}; return { batch_code: b.code || '', coordinator: names[b.coordinator_id] || '—', supervisor: names[b.supervisor_id] || '—' }; };
+  const late = [];
+  for (const l of all(`SELECT * FROM lectures WHERE ${bw} AND sent_at<? AND excused=0`, T - D)) {
+    const vMiss = !l.video_at || l.video_at > T, qMiss = !l.no_q && (!l.q_at || l.q_at > T);
+    if (!vMiss && !qMiss) continue;
+    late.push({ id: l.id, name: l.name, type: l.type, priority: l.priority, since: l.sent_at + D, late_ms: T - l.sent_at - D, missing: [vMiss && 'الفيديو', qMiss && 'ملف الأسئلة'].filter(Boolean), doctor: names[l.doctor_id] || '—', ...who(l.batch_id) });
+  }
+  late.sort((a, b) => a.since - b.since);
+  const lim = num('coord_reply_minutes') * 60e3, csLim = num('cs_reply_minutes') * 60e3, before = x => x && x < T;
+  const tk = all(`SELECT * FROM tickets WHERE ${bw} AND created_at<? AND (closed_at IS NULL OR closed_at>=?)`, T, T);
+  const problems = tk.filter(x => x.kind === 'problem').map(x => ({ id: x.id, body: x.body.slice(0, 160), student: x.student, age_ms: T - x.created_at, created_at: x.created_at, ...who(x.batch_id) })).sort((a, b) => b.age_ms - a.age_ms);
+  const lateQ = [], waitingDoctor = [];
+  for (const x of tk.filter(x => x.kind === 'question')) {
+    const base = { id: x.id, body: x.body.slice(0, 160), student: x.student, ...who(x.batch_id), doctor: names[x.doctor_id] || null };
+    if (!before(x.sent_doctor_at)) { if (T - x.created_at > lim) lateQ.push({ ...base, stage: 'لسه مااتبعتش للدكتور', owner: base.coordinator, late_ms: T - x.created_at - lim }); }
+    else if (!before(x.reply_at)) waitingDoctor.push({ ...base, age_ms: T - x.sent_doctor_at });
+    else if (!before(x.returned_at)) { if (T - x.reply_at > lim) lateQ.push({ ...base, stage: 'الدكتور رد ومارجعش لخدمة العملاء', owner: base.coordinator, late_ms: T - x.reply_at - lim }); }
+    else if (T - x.returned_at > csLim) lateQ.push({ ...base, stage: 'الرد ماوصلش للطالب', owner: 'خدمة العملاء', late_ms: T - x.returned_at - csLim });
+  }
+  lateQ.sort((a, b) => b.late_ms - a.late_ms); waitingDoctor.sort((a, b) => b.age_ms - a.age_ms);
+  // team: what's missing today
+  const team = [], lastDayOfWeek = new Date(day + 'T12:00:00Z').getUTCDay() === 5; // Friday ends the Sat-Fri week
+  const coords = u.role === 'supervisor' ? all("SELECT DISTINCT u.id, u.name FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.supervisor_id=? AND u.active=1", u.id) : all("SELECT id, name FROM users WHERE role='coordinator' AND active=1 ORDER BY name");
+  for (const c of coords) {
+    const done = new Set(all('SELECT item FROM checklist WHERE user_id=? AND done=1 AND period IN (?,?)', c.id, day, weekStr(t)).map(r => r.item));
+    let miss = Object.entries(DAILY).filter(([k]) => !done.has(k)).map(([, v]) => v);
+    if (miss.length === Object.keys(DAILY).length) miss = [`ماعلّمش على أي مهمة من الـ${miss.length} النهارده`];
+    if (lastDayOfWeek) for (const [k, v] of Object.entries(WEEKLY)) if (!done.has(k)) miss.push(v + ' (أسبوعي)');
+    team.push({ id: c.id, name: c.name, role: 'coordinator', missing: miss, total: Object.keys(DAILY).length, done: Object.keys(DAILY).filter(k => done.has(k)).length });
+  }
+  if (u.role === 'admin') {
+    for (const s of all("SELECT id, name FROM users WHERE role='supervisor' AND active=1 ORDER BY name")) {
+      const has = one('SELECT 1 FROM reports WHERE user_id=? AND day=?', s.id, day);
+      team.push({ id: s.id, name: s.name, role: 'supervisor', missing: has ? [] : ['التقرير اليومي'], total: 1, done: has ? 1 : 0 });
+    }
+    const stale = all('SELECT b.code, (SELECT MAX(day) FROM subs s WHERE s.batch_id=b.id) last FROM batches b WHERE b.active=1').filter(b => !b.last || (Date.parse(day + 'T00:00:00Z') - Date.parse(b.last + 'T00:00:00Z')) / DAY > 7);
+    team.push({ id: 0, name: 'خدمة العملاء', role: 'cs', missing: stale.length ? [`تسجيل اشتراكات ${stale.length} دفعة عدّى عليها أكتر من 7 أيام${stale.length <= 6 ? ` (${stale.map(b => b.code).join('، ')})` : ''}`] : [], total: 1, done: stale.length ? 0 : 1 });
+  }
+  // delivered today
+  const dl = all(`SELECT * FROM lectures WHERE ${bw} AND video_at IS NOT NULL AND q_at IS NOT NULL AND MAX(video_at,q_at)>=? AND MAX(video_at,q_at)<?`, t0, t1)
+    .map(l => ({ id: l.id, name: l.name, type: l.type, price: l.price, doctor: names[l.doctor_id] || '—', batch_code: (bmap[l.batch_id] || {}).code, late: isLate(l.video_at, l.sent_at, l.excused) || isLate(l.q_at, l.sent_at, l.excused) }));
+  const byType = {}; for (const l of dl) { const x = (byType[l.type] ||= { n: 0, sum: 0 }); x.n++; x.sum += l.price; }
+  return { day, at: T, late, problems, lateQ, waitingDoctor, team, delivered: { n: dl.length, total: dl.reduce((s, l) => s + l.price, 0), byType, list: dl } };
+}
+function dailyReportText(r, brand = setting('brand')) {
+  const m = n => (Math.round(n * 100) / 100).toLocaleString('en-US'), cap = (arr, n, f) => [...arr.slice(0, n).map(f), ...(arr.length > n ? [`… و${arr.length - n} كمان في اللوحة`] : [])];
+  const L = [`📋 تقرير ${brand} اليومي · ${r.day}`, ''];
+  L.push(`✅ اتشرح النهارده: ${r.delivered.n} محاضرة · الإجمالي ${m(r.delivered.total)}`);
+  for (const [t, x] of Object.entries(r.delivered.byType)) L.push(`   ${TYPES[t]}: ${x.n} = ${m(x.sum)}`);
+  L.push('', `⏰ محاضرات متأخرة: ${r.late.length}`);
+  L.push(...cap(r.late, 15, l => `• #${l.id} ${l.name} · دفعة ${l.batch_code}\n   متأخرة من ${fmtDur(l.late_ms)} · ناقص ${l.missing.join(' و')}\n   د. ${l.doctor} · المسؤول: ${l.coordinator} · المشرف: ${l.supervisor}`));
+  L.push('', `❗ مشاكل مفتوحة: ${r.problems.length}`);
+  L.push(...cap(r.problems, 10, p => `• #${p.id} دفعة ${p.batch_code} · مفتوحة من ${fmtDur(p.age_ms)} · ${p.coordinator}\n   ${p.body.slice(0, 80)}`));
+  L.push('', `💬 أسئلة متأخرة: ${r.lateQ.length}${r.waitingDoctor.length ? ` · مستنية رد الدكتور: ${r.waitingDoctor.length}` : ''}`);
+  L.push(...cap(r.lateQ, 10, q => `• #${q.id} دفعة ${q.batch_code} · ${q.stage} · متأخر ${fmtDur(q.late_ms)} · على: ${q.owner}`));
+  const miss = r.team.filter(x => x.missing.length);
+  L.push('', `📝 التاسكات الناقصة: ${miss.length ? `${miss.length} من التيم` : 'التيم كله خلّص ✓'}`);
+  for (const x of miss) L.push(`• ${x.name}: ${x.missing.join('، ')}`);
+  return L.join('\n').slice(0, 4000);
+}
 function coordinatorReport(id, day = dayStr()) {
   const items = all('SELECT item, done, note FROM checklist WHERE user_id=? AND period IN (?,?)', id, day, weekStr(Date.parse(day + 'T12:00:00Z')));
   const map = Object.fromEntries(items.map(i => [i.item, i]));
@@ -239,4 +307,4 @@ function coordinatorReport(id, day = dayStr()) {
 }
 
 module.exports = { PRIORITY, monthWin, H, DAY, now, TYPES, DAILY, WEEKLY, dayStr, weekStr, dayStart, localHM, TZ, deadline, batchIds, inList, scopedLectures, scopedDoctorIds, fileState, isLate, delivered, lectureState, uploadLate, decorate,
-  doctorStats, coordinatorStats, supervisorStats, csStats, payable, daySummary, batchRows, alerts, aiPrompt, coordinatorReport, fmtDur, latestSubs };
+  doctorStats, coordinatorStats, supervisorStats, csStats, payable, daySummary, batchRows, alerts, aiPrompt, coordinatorReport, fmtDur, latestSubs, dailyReport, dailyReportText };

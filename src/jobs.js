@@ -13,12 +13,16 @@ async function reminders() {
   for (const l of all('SELECT * FROM lectures WHERE (video_at IS NULL OR q_at IS NULL)')) {
     const left = l.sent_at + D - now;
     if (left > 0 && left <= remindMs && !l.reminded) { run('UPDATE lectures SET reminded=1 WHERE id=?', l.id); await bot.remind(l, false); }
-    if (left <= 0 && !l.overdue_notified && !l.excused) { run('UPDATE lectures SET overdue_notified=1 WHERE id=?', l.id); await bot.remind(l, true); }
+    if (left <= 0 && !l.late_alerted && !l.excused) { run('UPDATE lectures SET overdue_notified=1, late_alerted=1 WHERE id=?', l.id); await bot.lateAlert(l); }
+  }
+  // transfers nobody confirmed within 24h
+  for (const t of all("SELECT t.id, u.name FROM transfer_msgs t JOIN users u ON u.id=t.user_id WHERE t.needs_confirm=1 AND t.confirmed_at IS NULL AND t.problem IS NULL AND t.reminded=0 AND t.created_at<?", now - L.DAY)) {
+    run('UPDATE transfer_msgs SET reminded=1 WHERE id=?', t.id);
+    await bot.sendAdmin(`⏳ ${t.name} لسه ماأكدش استلام التحويل من 24 ساعة.\nكلّمه من الحسابات (زرار الواتساب أو التليجرام).`);
   }
 }
 function dailySummaryText() {
-  const s = L.daySummary({ role: 'admin', id: 0 });
-  return `تقرير ${setting('brand')} اليومي · ${L.dayStr()}\n\nمحاضرات اتبعتت: ${s.sent}\nفيديوهات اتسلمت: ${s.videos}\nملفات أسئلة اتسلمت: ${s.qfiles}\nاترفعت: ${s.uploaded}\nمتأخرة الآن: ${s.lateNow}\nمستنية رفع: ${s.toUpload}\nأسئلة جديدة: ${s.questions}\nتذاكر عدّت المهلة: ${s.ticketsLate}\nمشاكل مفتوحة: ${s.problemsOpen}\n\nبرومبت التحليل الكامل في اللوحة: التقارير ← نسخ البرومبت.`;
+  return L.dailyReportText(L.dailyReport({ role: 'admin', id: 0 })) + '\n\nالتفاصيل وبرومبت التحليل في اللوحة: التقارير.';
 }
 async function backup() {
   const file = path.join(DATA_DIR, `backup-${L.dayStr()}.db`);

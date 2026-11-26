@@ -14,7 +14,7 @@ const tg = http.createServer((req, res) => {
   const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => {
     if (req.url.startsWith('/file/')) { res.setHeader('content-type', 'audio/ogg'); return res.end('OGGDATA'); }
     const method = req.url.split('/').pop(); const raw = Buffer.concat(chunks);
-    let body = {}; try { body = JSON.parse(raw.toString()); } catch { body = { multipart: true, size: raw.length, text: raw.toString('latin1').slice(0, 300) }; }
+    let body = {}; try { body = JSON.parse(raw.toString()); } catch { body = { multipart: true, size: raw.length, text: raw.toString('latin1').slice(0, 3000) }; }
     tgCalls.push({ method, body });
     let result = true;
     if (['sendMessage', 'sendDocument', 'sendVideo', 'sendVoice', 'sendAudio', 'sendPhoto'].includes(method)) result = { message_id: ++msgId, document: { file_id: 'FILE' + msgId } };
@@ -138,6 +138,8 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     ok(bBtn, 'batch buttons'); await cbq(6001, bBtn.callback_data);
     kbm = lastKb(); const lBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)); ok(lBtn, 'lecture buttons');
     tgCalls.length = 0; await cbq(6001, lBtn.callback_data);
+    const askS = tgCalls.find(c => /اسم الطالب/.test(c.body.text || '')); ok(askS && /ts:/.test(JSON.stringify(askS.body.reply_markup)), 'bot asks student name with skip');
+    tgCalls.length = 0; await hook(msg(6001, { text: 'أحمد 0555123456' })); await sleep(150);
     const toCoord = tgCalls.find(c => String(c.body.chat_id) === '6002' && /سؤال جديد/.test(c.body.text || '')); ok(toCoord, 'coordinator notified');
     ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '6002' && c.body.voice === 'CSVOICE'), 'coordinator got voice');
     const tdBtn = toCoord.body.reply_markup.inline_keyboard[0][0]; ok(tdBtn.text.includes('د. تجربة'), 'lecture doctor first');
@@ -151,7 +153,7 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     tgCalls.length = 0; await cbq(6002, toC2.body.reply_markup.inline_keyboard[0][0].callback_data);
     const toCs = tgCalls.find(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '')); ok(toCs, 'cs got reply');
     await cbq(6001, toCs.body.reply_markup.inline_keyboard[0][0].callback_data);
-    const bt = (await admin.req('GET', '/api/tickets')).find(t => t.id === btid); ok(bt.stage === 'closed' && bt.att_kind === 'voice' && bt.lecture_id === L1.id, 'bot flow closed');
+    const bt = (await admin.req('GET', '/api/tickets')).find(t => t.id === btid); ok(bt.stage === 'closed' && bt.att_kind === 'voice' && bt.lecture_id === L1.id && bt.student === 'أحمد 0555123456', 'bot flow closed (with student)');
     const attB = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${btid}/attachment`, { headers: { cookie: cs.cookie } }); ok((await attB.text()) === 'OGGDATA', 'tg attachment proxied');
     // payout + contact + admin notify + finance message
     tgCalls.length = 0;
@@ -164,8 +166,22 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     let fd2 = await admin.req('GET', '/api/finance/' + d.id); ok(fd2.payout.length === 2 && fd2.user.whatsapp === '01012345678' && fd2.user.tg_username === 'drtest', 'finance shows payout+contact');
     const rfd = new FormData(); rfd.append('note', 'اتحوّل ✓'); rfd.append('receipt', new Blob([Buffer.from('PNG')], { type: 'image/png' }), 'r.png');
     tgCalls.length = 0; const mr2 = await admin.req('POST', `/api/finance/${d.id}/message`, rfd); ok(mr2.delivered && tgCalls.some(c => c.method === 'sendPhoto'), 'receipt sent');
-    ok((await doc.req('GET', '/api/me/transfers')).length === 1, 'doctor sees transfer msg');
-    const fl = await admin.req('GET', '/api/finance'); ok(fl.every((r, i) => i === 0 || r.net <= fl[i - 1].net), 'finance sorted desc');
+    let trs = await doc.req('GET', '/api/me/transfers'); ok(trs.length === 1 && trs[0].needs_confirm === 1, 'doctor sees transfer msg (needs confirm)');
+    ok(tgCalls.some(c => c.method === 'sendPhoto' && /rc:/.test(c.body.text || '')), 'receipt has confirm buttons');
+    tgCalls.length = 0; await cbq(5551, 'rc:' + trs[0].id);
+    ok((await doc.req('GET', '/api/me/transfers'))[0].confirmed_at && tgCalls.some(c => c.body.chat_id === '999' && /أكد استلام/.test(c.body.text || '')), 'confirmed via bot + admin told');
+    const nfd = new FormData(); nfd.append('note', 'اتحوّل 500'); nfd.append('confirm', '1');
+    tgCalls.length = 0; await admin.req('POST', `/api/finance/${d.id}/message`, nfd);
+    const trMsg = tgCalls.find(c => c.method === 'sendMessage' && String(c.body.chat_id) === '5551'); ok(trMsg && /rx:/.test(JSON.stringify(trMsg.body.reply_markup)), 'note asks confirm');
+    const tr2 = (await doc.req('GET', '/api/me/transfers'))[0];
+    tgCalls.length = 0; await cbq(5551, 'rx:' + tr2.id);
+    const fr = tgCalls.find(c => c.body.reply_markup && c.body.reply_markup.force_reply); ok(fr, 'problem prompt');
+    tgCalls.length = 0; await hook(msg(5551, { text: 'التحويل ماوصلش', reply_to_message: { message_id: msgId } })); await sleep(150);
+    ok((await doc.req('GET', '/api/me/transfers'))[0].problem === 'التحويل ماوصلش' && tgCalls.some(c => c.body.chat_id === '999' && /مشكلة في التحويل/.test(c.body.text || '')), 'transfer problem recorded + admin told');
+    ok((await admin.req('GET', '/api/home')).alerts.some(a => a.type === 'transfer'), 'transfer alert');
+    const nfd2 = new FormData(); nfd2.append('note', 'تجربة'); nfd2.append('confirm', '0'); await admin.req('POST', `/api/finance/${d.id}/message`, nfd2);
+    const tr3 = (await doc.req('GET', '/api/me/transfers'))[0]; await doc.req('POST', `/api/me/transfers/${tr3.id}/confirm`); ok(tr3.needs_confirm === 0, 'confirm optional');
+    const fl = (await admin.req('GET', '/api/finance')).rows; ok(fl.every((r, i) => i === 0 || r.net <= fl[i - 1].net), 'finance sorted desc');
     // problem
     const P = await cs.req('POST', '/api/tickets', { kind: 'problem', batch_id: b11.id, body: 'الفيديو مش شغال' });
     await walaa.req('PATCH', '/api/tickets/' + P.id, { action: 'close', resolution: 'اترفع تاني' });
@@ -203,14 +219,31 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     // cs variable pay
     const cs2id = (await admin.req('GET', '/api/users')).find(u => u.email === 'cs2@vitalmedx.app').id;
     await admin.req('POST', '/api/extra', { user_id: cs2id, amount: 3000, note: 'شهر نوفمبر' });
-    ok((await admin.req('GET', '/api/finance')).find(r => r.id === cs2id).net === 3000, 'extra pay');
+    ok((await admin.req('GET', '/api/finance')).rows.find(r => r.id === cs2id).net === 3000, 'extra pay');
+    // month history + statement PDF + period-limited close
+    const L_ = require('../src/logic'), curM = L_.dayStr().slice(0, 7), [yy, mm] = curM.split('-').map(Number), prevM = mm === 1 ? `${yy - 1}-12` : `${yy}-${String(mm - 1).padStart(2, '0')}`;
+    ok((await admin.req('GET', `/api/finance/${d.id}?period=${prevM}`)).lecs.length === 0, 'prev month excludes lectures sent this month');
+    const sc = await admin.req('POST', `/api/finance/${cs2id}/settle`, { kind: 'month', period: prevM }); ok(sc.net === 3000, 'settle prev month');
+    await admin.req('POST', `/api/finance/${cs2id}/settle`, { kind: 'month', period: 'bad' }).then(() => ok(false), e => ok(e.status === 400, 'period validated'));
+    const hist = await admin.req('GET', '/api/finance?month=' + prevM); ok(hist.history && hist.rows.some(r => r.id === cs2id && r.net === 3000 && r.unpaid === 1) && hist.open.some(x => x.id === d.id), 'month history');
+    ok(!(await admin.req('GET', '/api/finance')).history, 'current month live');
+    const pdfR = await fetch(`http://127.0.0.1:${PORT}/api/settlements/${sc.id}/pdf`, { headers: { cookie: admin.cookie } }); const pdfB = Buffer.from(await pdfR.arrayBuffer());
+    ok(pdfR.headers.get('content-type') === 'application/pdf' && pdfB.slice(0, 5).toString() === '%PDF-' && pdfB.length < 200000, 'statement pdf');
+    const dpdf = await fetch(`http://127.0.0.1:${PORT}/api/settlements/${s.id}/pdf`, { headers: { cookie: doc.cookie } }); ok(dpdf.status === 200, 'doctor gets own statement');
+    const xpdf = await fetch(`http://127.0.0.1:${PORT}/api/settlements/${sc.id}/pdf`, { headers: { cookie: doc.cookie } }); ok(xpdf.status === 403, 'not others statements');
+    const sfd = new FormData(); sfd.append('note', 'حساب الشهر'); sfd.append('settlement_id', String(s.id));
+    tgCalls.length = 0; await admin.req('POST', `/api/finance/${d.id}/message`, sfd); ok(tgCalls.some(c => c.method === 'sendDocument' && /PDF|pdf/.test(c.body.text || '')), 'statement sent with transfer');
     // team + prompt
     const team = await admin.req('GET', '/api/team'); ok(team.coordinators.length === 5 && team.supervisors.length === 2 && team.cs.length === 2, 'team');
     const pr = await admin.req('GET', '/api/prompt'); ok(/1-1/.test(pr.text) && /د. تجربة/.test(pr.text) && /المطلوب/.test(pr.text), 'prompt');
     // jobs: reminders / daily report / backup
-    process.env.TG_API = env.TG_API; process.env.BOT_TOKEN = 'TEST'; process.env.BACKUP_CHAT_ID = '998';
+    process.env.TG_API = env.TG_API; process.env.BOT_TOKEN = 'TEST'; process.env.BACKUP_CHAT_ID = '998'; process.env.ADMIN_CHAT_ID = '999';
     const jobs = require('../src/jobs'); tgCalls.length = 0;
     await jobs.reminders(); ok(tgCalls.some(c => /مهلة المحاضرة/.test(c.body.text || '')), 'overdue reminder');
+    const la = tgCalls.filter(c => /⚠️ تأخير/.test(c.body.text || ''));
+    ok(la.some(c => String(c.body.chat_id) === '6002') && la.some(c => String(c.body.chat_id) === '999') && /1-1/.test(la[0].body.text) && /ولاء/.test(la[0].body.text), 'late alert to coordinator + admin at once');
+    ok(!tgCalls.some(c => String(c.body.chat_id) === '5551' && /1-1|دفعة/.test(c.body.text || '')), 'doctor alert hides batch');
+    tgCalls.length = 0; await jobs.reminders(); ok(!tgCalls.some(c => /تأخير/.test(c.body.text || '')), 'late alert only once');
     const bk = await jobs.backup(); ok(bk && fs.existsSync(bk), 'backup file'); ok(tgCalls.some(c => c.method === 'sendDocument' && c.body.multipart), 'backup sent');
     // webhook secret enforced
     const bad = await fetch(`http://127.0.0.1:${PORT}/tg/${SECRET}`, { method: 'POST', body: '{}' }); ok(bad.status === 404, 'webhook needs header');
@@ -255,10 +288,34 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const ck = r1.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
     const meI = await fetch(`http://127.0.0.1:${PORT}/api/me`, { headers: { cookie: ck } }).then(r => r.json()); ok(meI.name === 'ولاء' && meI.impersonated_by === 'الأدمن', 'impersonating');
     const bsI = await fetch(`http://127.0.0.1:${PORT}/api/batches`, { headers: { cookie: ck } }).then(r => r.json()); ok(bsI.length === 5, 'impersonated scope');
+    await fetch(`http://127.0.0.1:${PORT}/api/checklist`, { method: 'PUT', headers: { cookie: ck, 'x-requested-with': 'vm', 'content-type': 'application/json' }, body: JSON.stringify({ item: 'post', done: true }) });
     const r2 = await fetch(`http://127.0.0.1:${PORT}/api/impersonate-stop`, { method: 'POST', headers: { cookie: ck, 'x-requested-with': 'vm' } });
     const ck2 = r2.headers.getSetCookie().map(c => c.split(';')[0]).filter(c => !c.endsWith('=')).join('; ');
     const meB = await fetch(`http://127.0.0.1:${PORT}/api/me`, { headers: { cookie: ck2 } }).then(r => r.json()); ok(meB.role === 'admin' && !meB.impersonated_by, 'back to admin');
     await walaa.req('POST', `/api/impersonate/${d.id}`).then(() => ok(false), e => ok(e.status === 403, 'non-admin cannot impersonate'));
+    // auto daily report
+    const dr = await admin.req('GET', '/api/daily-report');
+    const lr = dr.late.find(x => x.id === L2.id); ok(lr && lr.coordinator === 'ولاء' && lr.supervisor !== '—' && lr.doctor === 'د. تجربة' && lr.missing.includes('الفيديو'), 'report: late with owners');
+    ok(!dr.late.some(x => x.id === LP.id), 'report: excused not late');
+    ok(dr.team.some(x => x.role === 'coordinator' && x.missing.length) && dr.team.some(x => x.role === 'supervisor') && dr.delivered.n >= 1 && dr.delivered.total > 0, 'report: team + delivered');
+    ok(/تقرير/.test(dr.text) && /متأخرة/.test(dr.text), 'report text');
+    const drs = await sup.req('GET', '/api/daily-report'); ok(drs.team.every(x => x.role === 'coordinator'), 'supervisor report scoped');
+    await walaa.req('GET', '/api/daily-report').then(() => ok(false), e => ok(e.status === 403, 'coordinator no report'));
+    ok(/التاسكات الناقصة/.test(jobs.dailySummaryText()), 'daily telegram uses new report');
+    // doctor notes (hidden from doctor)
+    await walaa.req('POST', `/api/doctors/${d.id}/notes`, { body: 'شرحه سريع' });
+    ok((await admin.req('GET', '/api/doctors/' + d.id)).notes.some(n => n.body === 'شرحه سريع' && n.author === 'ولاء'), 'note visible to admin');
+    ok(!('notes' in (await doc.req('GET', '/api/doctors/' + d.id))), 'doctor cannot see notes');
+    await doc.req('POST', `/api/doctors/${d.id}/notes`, { body: 'x' }).then(() => ok(false), e => ok(e.status === 403, 'doctor cannot add note'));
+    const nid = (await sup.req('GET', '/api/doctors/' + d.id)).notes[0].id;
+    await sup.req('DELETE', '/api/notes/' + nid).then(() => ok(false), e => ok(e.status === 403, 'only author/admin deletes'));
+    await admin.req('DELETE', '/api/notes/' + nid); ok((await admin.req('GET', '/api/doctors/' + d.id)).notes.length === 0, 'admin deleted note');
+    // audit log
+    const au = await admin.req('GET', '/api/audit'); ok(au.rows.some(a => a.what === 'بعت محاضرة جديدة' && a.name === 'ولاء'), 'audit: lecture send');
+    ok(au.rows.some(a => a.what === 'حدّث مهام اليوم' && a.admin_name), 'audit: impersonated action flagged');
+    ok(au.rows.some(a => /البوت/.test(a.what)), 'audit: bot actions');
+    ok(!au.rows.some(a => /pass/.test(JSON.stringify(a))), 'audit: no passwords');
+    await walaa.req('GET', '/api/audit').then(() => ok(false), e => ok(e.status === 403, 'audit admin only'));
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);

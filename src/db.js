@@ -67,6 +67,13 @@ db.exec('CREATE TABLE IF NOT EXISTS transfer_msgs(id INTEGER PRIMARY KEY, user_i
 db.exec(`CREATE TABLE IF NOT EXISTS payout_methods(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('vodafone','instapay','bank')), name TEXT, number TEXT, bank TEXT, iban TEXT, account TEXT, created_at INTEGER NOT NULL)`);
 db.exec(`CREATE TABLE IF NOT EXISTS bot_drafts(id INTEGER PRIMARY KEY, tg_id TEXT NOT NULL, kind TEXT, body TEXT, file_id TEXT, file_kind TEXT, batch_id INTEGER, created_at INTEGER NOT NULL)`);
 if (!db.prepare("SELECT 1 FROM pragma_table_info('tickets') WHERE name='att_kind'").get()) db.exec('ALTER TABLE tickets ADD COLUMN att_kind TEXT');
+const addCol = (t, c, d) => { if (db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name=?`).get(c)) return false; db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); return true; };
+for (const [c, d] of [['lecture_id', 'INTEGER'], ['await_student', 'INTEGER NOT NULL DEFAULT 0']]) addCol('bot_drafts', c, d);
+for (const [c, d] of [['needs_confirm', 'INTEGER NOT NULL DEFAULT 0'], ['confirmed_at', 'INTEGER'], ['problem', 'TEXT'], ['problem_at', 'INTEGER'], ['problem_msg_id', 'INTEGER'], ['problem_wait', 'INTEGER'], ['reminded', 'INTEGER NOT NULL DEFAULT 0'], ['settlement_id', 'INTEGER']]) addCol('transfer_msgs', c, d);
+if (addCol('lectures', 'late_alerted', 'INTEGER NOT NULL DEFAULT 0')) db.exec('UPDATE lectures SET late_alerted=overdue_notified'); // don't re-alert old lates after upgrade
+addCol('audit', 'as_admin', 'INTEGER');
+db.exec('CREATE INDEX IF NOT EXISTS audit_at ON audit(at)');
+db.exec('CREATE TABLE IF NOT EXISTS doctor_notes(id INTEGER PRIMARY KEY, doctor_id INTEGER NOT NULL, by INTEGER NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL)');
 db.exec('CREATE TABLE IF NOT EXISTS rank_overrides(month TEXT NOT NULL, role TEXT NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, by INTEGER, at INTEGER, PRIMARY KEY(month, role, user_id))');
 
 const DEFAULTS = {
@@ -80,7 +87,7 @@ const all = (sql, ...a) => db.prepare(sql).all(...a);
 const run = (sql, ...a) => db.prepare(sql).run(...a);
 const setting = k => (one('SELECT value FROM settings WHERE key=?', k) || {}).value ?? DEFAULTS[k];
 const num = k => Number(setting(k));
-const audit = (user_id, action, detail) => run('INSERT INTO audit(user_id,action,detail,at) VALUES(?,?,?,?)', user_id ?? null, action, detail ? JSON.stringify(detail) : null, Date.now());
+const audit = (user_id, action, detail, asAdmin) => run('INSERT INTO audit(user_id,action,detail,at,as_admin) VALUES(?,?,?,?,?)', user_id ?? null, action, detail ? JSON.stringify(detail) : null, Date.now(), asAdmin ?? null);
 function tx(fn) { db.exec('BEGIN'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } }
 
 module.exports = { db, one, all, run, setting, num, audit, tx, DB_PATH, DATA_DIR };

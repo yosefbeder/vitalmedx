@@ -31,7 +31,7 @@ new MutationObserver(() => { for (const c of document.querySelectorAll('.stack t
 let ME = null, view = 'home', cache = {};
 const ROLE = { admin: 'أدمن', supervisor: 'مشرف', coordinator: 'مسؤول دفعة', cs: 'خدمة عملاء', doctor: 'دكتور' };
 const NAV = {
-  admin: [['home', 'لوحة التحكم'], ['unis', 'الجامعات'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'الفريق'], ['ranking', 'الترتيب'], ['reports', 'التقارير'], ['penalties', 'العقوبات'], ['finance', 'الحسابات'], ['subs', 'الاشتراكات'], ['settings', 'الإعدادات'], ['account', 'حسابي']],
+  admin: [['home', 'لوحة التحكم'], ['unis', 'الجامعات'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'الفريق'], ['ranking', 'الترتيب'], ['reports', 'التقارير'], ['penalties', 'العقوبات'], ['finance', 'الحسابات'], ['subs', 'الاشتراكات'], ['audit', 'سجل العمليات'], ['settings', 'الإعدادات'], ['account', 'حسابي']],
   supervisor: [['home', 'لوحة التحكم'], ['unis', 'دفعاتي'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'التيم'], ['reports', 'التقرير اليومي'], ['penalties', 'العقوبات'], ['account', 'حسابي']],
   coordinator: [['home', 'لوحة التحكم'], ['checklist', 'مهام اليوم'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['unis', 'دفعاتي'], ['doctors', 'الدكاترة'], ['penalties', 'العقوبات'], ['account', 'حسابي']],
   cs: [['tickets', 'التذاكر'], ['subs', 'الاشتراكات'], ['shift', 'الشيفت'], ['account', 'حسابي']],
@@ -67,7 +67,7 @@ async function boot() {
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
   let ib = document.getElementById('impbar'); if (ib) ib.remove();
   if (ME.impersonated_by) { ib = document.createElement('div'); ib.id = 'impbar'; ib.style.cssText = 'z-index:20;background:#9a6408;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap'; ib.innerHTML = `<span>إنت داخل على حساب <b>${esc(ME.name)}</b> (${ROLE[ME.role]}) بصلاحياته. أي حاجة تعملها هتتسجل باسمه.</span><button class="btn sm" style="background:#fff;color:#000;border-color:#fff" id="impstop">رجوع لحسابي</button>`; document.querySelector('.content').prepend(ib); $('#impstop').onclick = async () => { await api('POST', '/api/impersonate-stop'); location.hash = 'settings'; await boot(); }; }
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.5.0</small>`;
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.6.0</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });
@@ -288,23 +288,43 @@ V.checklist = async () => {
 };
 
 /* ----- reports ----- */
-const sumLines = s => `<div class="kpis">${kpi(s.sent, 'اتبعتت')}${kpi(s.videos, 'فيديوهات')}${kpi(s.qfiles, 'ملفات أسئلة')}${kpi(s.uploaded, 'اترفعت')}${kpi(s.lateNow, 'متأخرة الآن', s.lateNow)}${kpi(s.questions, 'أسئلة')}${kpi(s.ticketsLate, 'تذاكر متأخرة', s.ticketsLate)}${kpi(s.problemsOpen, 'مشاكل مفتوحة', s.problemsOpen)}</div>`;
+async function autoReport(day) {
+  const r = await api('GET', '/api/daily-report?day=' + day), d = r.delivered, miss = r.team.filter(x => x.missing.length);
+  const tbl = (head, rows) => `<table class="stack"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+  const html = `<section class="panel" id="autorep"><div class="row sp"><h3 style="margin:0">التقرير التلقائي · ${esc(r.day)}</h3><span class="row"><button class="btn g sm" id="arcp">نسخ كنص</button><button class="btn g sm" id="artg">ابعتهولي على تليجرام</button></span></div>
+  <p class="mut">بيتعمل لوحده من الداتا. ${day === ME.today ? 'الأرقام لحد دلوقتي.' : 'الأرقام زي ما كانت آخر اليوم ده.'}</p>
+  <div class="kpis">${kpi(d.n, 'محاضرة اتشرحت')}${kpi(money(d.total), 'إجمالي سعرهم')}${kpi(r.late.length, 'محاضرة متأخرة', r.late.length)}${kpi(r.problems.length, 'مشكلة مفتوحة', r.problems.length)}${kpi(r.lateQ.length, 'سؤال متأخر', r.lateQ.length)}${kpi(miss.length, 'ناقصهم تاسكات', miss.length)}</div>
+  ${Object.keys(d.byType).length ? `<p>${Object.entries(d.byType).map(([t, x]) => `${TY()[t]}: ${x.n} = ${money(x.sum)}`).join(' · ')}</p>` : ''}
+  <h3>المحاضرات المتأخرة (${r.late.length})</h3>${r.late.length ? tbl(['المحاضرة', 'الدكتور', 'متأخرة من', 'ناقص', 'المسؤول', 'المشرف'], r.late.map(l => `<tr class="click" data-lec="${l.id}"><td><b>#${l.id} ${esc(l.name)}</b><div class="mut"><span dir="ltr">${esc(l.batch_code)}</span> · الديدلاين ${fmt(l.since)}${l.priority >= 2 ? ' · ' + PRI[l.priority][0] : ''}</div></td><td>${esc(l.doctor)}</td><td class="red">${dur(l.late_ms)}</td><td>${esc(l.missing.join(' و'))}</td><td>${esc(l.coordinator)}</td><td>${esc(l.supervisor)}</td></tr>`)) : '<p class="ok">مفيش محاضرات متأخرة ✓</p>'}
+  <h3>المشاكل المفتوحة (${r.problems.length})</h3>${r.problems.length ? tbl(['#', 'الدفعة', 'المشكلة', 'مفتوحة من', 'المسؤول'], r.problems.map(x => `<tr class="click" data-tk="${x.id}"><td>${x.id}</td><td dir="ltr">${esc(x.batch_code)}</td><td>${esc(x.body)}${x.student ? `<div class="mut">${esc(x.student)}</div>` : ''}</td><td>${dur(x.age_ms)}</td><td>${esc(x.coordinator)}</td></tr>`)) : '<p class="ok">مفيش ✓</p>'}
+  <h3>الأسئلة المتأخرة (${r.lateQ.length})</h3>${r.lateQ.length ? tbl(['#', 'الدفعة', 'فين واقف', 'متأخر', 'على مين'], r.lateQ.map(x => `<tr class="click" data-tk="${x.id}"><td>${x.id}</td><td dir="ltr">${esc(x.batch_code)}</td><td>${esc(x.stage)}${x.student ? `<div class="mut">${esc(x.student)}</div>` : ''}</td><td class="red">${dur(x.late_ms)}</td><td>${esc(x.owner)}</td></tr>`)) : '<p class="ok">مفيش ✓</p>'}
+  ${r.waitingDoctor.length ? `<details><summary>أسئلة مستنية رد الدكتور (${r.waitingDoctor.length})</summary>${tbl(['#', 'الدفعة', 'الدكتور', 'مستني من'], r.waitingDoctor.map(x => `<tr class="click" data-tk="${x.id}"><td>${x.id}</td><td dir="ltr">${esc(x.batch_code)}</td><td>${esc(x.doctor || '—')}</td><td>${dur(x.age_ms)}</td></tr>`))}</details>` : ''}
+  <h3>التاسكات الناقصة النهارده</h3>${r.team.length ? tbl(['الشخص', 'خلّص', 'الناقص'], r.team.map(x => `<tr><td><b>${esc(x.name)}</b><div class="mut">${ROLE[x.role] || ''}</div></td><td class="n${x.missing.length ? ' red' : ''}">${x.done}/${x.total}</td><td>${x.missing.length ? x.missing.map(m => `<div>✗ ${esc(m)}</div>`).join('') : '<span class="ok">كله تمام ✓</span>'}</td></tr>`)) : empty('مفيش تيم')}
+  ${d.list.length ? `<details style="margin-top:10px"><summary>المحاضرات اللي اتشرحت (${d.n}) · ${money(d.total)}</summary>${tbl(['المحاضرة', 'الدكتور', 'النوع', 'السعر'], d.list.map(l => `<tr class="click" data-lec="${l.id}"><td>#${l.id} ${esc(l.name)}<div class="mut" dir="ltr">${esc(l.batch_code || '')}</div></td><td>${esc(l.doctor)}${l.late ? ' <span class="p bad">متأخر</span>' : ''}</td><td>${TY()[l.type]}</td><td class="n">${money(l.price)}</td></tr>`))}</details>` : ''}
+  </section>`;
+  return { html, text: r.text };
+}
+function bindAutoReport(rep, day) {
+  $('#arcp').onclick = async () => { try { await navigator.clipboard.writeText(rep.text); toast('اتنسخ ✓'); } catch { toast('النسخ مش متاح'); } };
+  $('#artg').onclick = async () => { await api('POST', '/api/daily-report/send', { day }); toast('اتبعت على تليجرام ✓'); };
+}
 V.reports = async () => {
-  const day = cache.rday || ME.today; const r = await api('GET', '/api/reports?day=' + day);
+  const day = cache.rday || ME.today; const [r, rep] = await Promise.all([api('GET', '/api/reports?day=' + day), autoReport(day)]);
   const dayPick = `<input type="date" id="rday" value="${esc(day)}" style="width:auto">`;
   if (ME.role === 'supervisor') {
     const s = r.draft, draft = r.mine?.body || `ملخص ${day}:\n- اتبعتت ${s.sent} محاضرة، واتسلم ${s.videos} فيديو و${s.qfiles} ملف أسئلة، واترفعت ${s.uploaded}.\n- متأخر دلوقتي ${s.lateNow}، ومشاكل مفتوحة ${s.problemsOpen}.\n- `;
-    $('#main').innerHTML = `<div class="row sp"><h2>التقرير اليومي</h2>${dayPick}</div>${sumLines(s)}
+    $('#main').innerHTML = `<div class="row sp"><h2>التقرير اليومي</h2>${dayPick}</div>${rep.html}
     <section class="panel"><h3>تقارير التيم</h3>${r.team.map(c => `<details class="panel" style="margin-bottom:8px"><summary><b>${esc(c.name)}</b> · ${c.report.items.filter(i => i.done && !i.weekly).length}/${c.report.items.filter(i => !i.weekly).length} مهام</summary>${c.report.items.map(i => `<p>${i.done ? '✓' : '✗'} ${esc(i.label)}${i.note ? `<br><span class="mut">${esc(i.note)}</span>` : ''}</p>`).join('')}</details>`).join('') || empty('مفيش مسؤولين')}</section>
     <form id="rf" class="panel"><h3>ملخص يومك ${r.mine ? '<span class="ok">(اترفع ✓)</span>' : ''}</h3><textarea name="body" rows="8" required>${esc(draft)}</textarea><button class="btn a">رفع التقرير للأدمن</button></form>`;
     $('#rf').onsubmit = async e => { e.preventDefault(); await api('PUT', '/api/reports', { body: new FormData(e.target).get('body') }); toast('التقرير اترفع'); V.reports(); };
   } else {
-    $('#main').innerHTML = `<div class="row sp"><h2>تقارير ${esc(day)}</h2>${dayPick}</div>${sumLines(r.summary)}
+    $('#main').innerHTML = `<div class="row sp"><h2>تقارير ${esc(day)}</h2>${dayPick}</div>${rep.html}
     <section class="panel"><h3>تقارير المشرفين</h3>${r.supervisors.map(s => `<div class="panel"><b>${esc(s.name)}</b> ${s.body ? `<span class="mut">${fmt(s.created_at)}</span><p style="white-space:pre-wrap">${esc(s.body)}</p>` : '<p class="red">لسه مارفعش تقريره</p>'}</div>`).join('')}</section>
     <section class="panel"><div class="row sp"><h3>برومبت التحليل اليومي</h3><button class="btn a sm" id="cp">نسخ البرومبت</button></div><p class="mut">انسخه وحطه في أي ذكاء اصطناعي يحللك اليوم ويقولك تعمل إيه بكرة.</p><pre class="prompt" id="pt">بيحمّل…</pre></section>`;
     api('GET', '/api/prompt?day=' + day).then(p => { $('#pt').textContent = p.text; });
     $('#cp').onclick = async () => { try { await navigator.clipboard.writeText($('#pt').textContent); toast('اتنسخ'); } catch { toast('حدد النص وانسخه بإيدك'); } };
   }
+  bindAutoReport(rep, day);
   $('#rday').onchange = () => { cache.rday = $('#rday').value; V.reports(); };
 };
 
@@ -323,8 +343,10 @@ async function openDoctor(id) {
   ${admin ? `<form id="cf" class="panel"><h3>التعاقد</h3><div class="four"><label>نظري<input type="number" step="0.01" name="price_theory" value="${d.price_theory}"></label><label>عملي<input type="number" step="0.01" name="price_practical" value="${d.price_practical}"></label><label>مراجعة<input type="number" step="0.01" name="price_revision" value="${d.price_revision}"></label><label>الطاقة اليومية<input type="number" name="capacity" value="${d.capacity}"></label></div><label>تعديل التقييم من الإدارة (+/−)<input type="number" name="adj" value="${d.adj || 0}" min="-30" max="30"></label>${!d.linked ? `<p>كود الربط: <code>${esc(d.link_code)}</code></p>` : ''}<button class="btn sm">حفظ</button></form>` : ''}
   ${['admin', 'supervisor'].includes(ME.role) ? '<div class="panel"><h3>ترتيب المحاضرات المفتوحة</h3><p class="mut">رتّب المحاضرات بالأهمية اللي إنت شايفها. الدكتور بيشوفها بالترتيب ده في البوت واللوحة، من غير ما يشوف الأولوية.</p><div id="dq">بيحمّل…</div></div>' : ''}
   <h3>آخر المحاضرات</h3>${lecTable(d.lectures)}
+  ${d.notes ? `<div class="panel"><h3>ملاحظات الفريق</h3><p class="mut">الدكتور مش بيشوف الملاحظات دي. بيشوفها الأدمن والمشرفين ومسؤولين الدفعات.</p><div id="nl">${d.notes.length ? notesHtml(d.notes) : '<p class="mut">مفيش ملاحظات لسه.</p>'}</div><form id="nf2" style="margin-top:8px"><textarea name="body" rows="2" required placeholder="مثلاً: شرحه سريع في الجزء العملي، أو: اتأخر بسبب سفر واتفقنا معاه"></textarea><button class="btn sm">إضافة ملاحظة</button></form></div>` : ''}
   <h3>العقوبات</h3>${d.penalties.length ? d.penalties.map(p => `<p>${pill(PST[p.status][0], PST[p.status][1])} ${esc(p.kind)}${p.amount ? ' · ' + money(p.amount) : ''} · ${esc(p.reason)} <span class="mut">${fmt(p.created_at)}</span></p>`).join('') : '<p class="mut">مفيش</p>'}`);
   if ($('#cf')) $('#cf').onsubmit = async e => { e.preventDefault(); await api('PATCH', '/api/doctors/' + id, Object.fromEntries(new FormData(e.target))); toast('اتحفظ'); openDoctor(id); };
+  if ($('#nf2')) { $('#nf2').onsubmit = async e => { e.preventDefault(); const ns = await api('POST', `/api/doctors/${id}/notes`, Object.fromEntries(new FormData(e.target))); e.target.reset(); $('#nl').innerHTML = notesHtml(ns); bindNoteDel(() => openDoctor(id)); toast('اتضافت ✓'); }; bindNoteDel(() => openDoctor(id)); }
   if ($('#dq')) {
     let q = (await api('GET', `/api/lectures?doctor=${id}&sort=queue&limit=300`)).filter(l => !(l.video_at && l.q_at));
     const draw = () => { $('#dq').innerHTML = q.length ? `<table class="stack"><tbody>${q.map((l, i) => `<tr><td><b>${i + 1}</b></td><td>#${l.id} ${esc(l.name)}<div class="mut"><span dir="ltr">${esc(l.batch_code || '')}</span> · ${fmt(l.sent_at)}${l.excused ? ' · مستثناة' : ''}</div></td><td>${pill(...PRI[l.priority ?? 1])} ${pill(...LS[l.state])}</td><td class="n"><button class="btn g sm" data-up="${i}" ${i ? '' : 'disabled'}>▲</button> <button class="btn g sm" data-dn="${i}" ${i < q.length - 1 ? '' : 'disabled'}>▼</button></td></tr>`).join('')}</tbody></table><button class="btn a sm" id="qsave" style="margin-top:8px">حفظ الترتيب</button>` : empty('مفيش محاضرات مفتوحة');
@@ -367,13 +389,23 @@ V.penalties = async () => {
 
 /* ----- finance ----- */
 V.finance = async () => {
-  const rows = await api('GET', '/api/finance');
-  const tot = rows.reduce((s, r) => s + r.net, 0);
+  const cur = ME.today.slice(0, 7), month = cache.fmonth || cur, r = await api('GET', '/api/finance?month=' + month), rows = r.rows;
+  const picker = `<label class="row" style="gap:6px;margin:0">الشهر <input type="month" id="fmon" value="${esc(month)}" max="${esc(cur)}" style="width:auto" dir="ltr"></label>`;
   const groups = [['doctor', 'الدكاترة'], ['coordinator', 'مسؤولين الدفعات'], ['supervisor', 'المشرفين'], ['cs', 'خدمة العملاء']];
-  $('#main').innerHTML = `<h2>الحسابات · المستحق دلوقتي ${money(tot)}</h2><p class="note">كل مجموعة مرتبة من أعلى مستحقات لأقل. الدكتور بيتحاسب على المحاضرات اللي سلّمها بس، واللي ماسلّمهاش بتترحّل للفترة اللي بعدها.</p>
-  ${groups.map(([role, title]) => { const rs = rows.filter(r => r.role === role); if (!rs.length) return ''; const sub = rs.reduce((a, r) => a + r.net, 0);
-    return `<section class="panel" style="padding:10px 12px"><div class="row sp"><h3 style="margin:0">${title}</h3><b>${money(sub)}</b></div><table class="stack"><thead><tr><th class="n">#</th><th>الاسم</th><th class="n">الأساسي</th><th class="n">بونص</th><th class="n">خصومات</th><th class="n">الصافي</th>${role === 'doctor' ? '<th class="n">محاضرات</th>' : ''}<th>التحويل</th><th></th></tr></thead><tbody>${rs.map((r, i) => `<tr class="click" data-fin="${r.id}"><td class="n">${i + 1}</td><td><b>${esc(r.name)}</b></td><td class="n">${money(r.gross)}</td><td class="n">${money(r.bonus)}</td><td class="n${r.deductions ? ' red' : ''}">${money(r.deductions)}</td><td class="n"><b>${money(r.net)}</b></td>${role === 'doctor' ? `<td class="n">${r.lectures}${r.pending ? ` <span class="mut">(+${r.pending} مفتوحة)</span>` : ''}</td>` : ''}<td>${r.payout ? '<span class="ok">متسجلة ✓</span>' : '<span class="mut">مش متسجلة</span>'}</td><td><button class="btn g sm">فتح</button></td></tr>`).join('')}</tbody></table></section>`; }).join('')}`;
-  document.querySelectorAll('[data-fin]').forEach(r => (r.onclick = () => openFinance(Number(r.dataset.fin))));
+  const tot = rows.reduce((s, x) => s + x.net, 0);
+  if (!r.history) {
+    $('#main').innerHTML = `<div class="row sp"><h2>الحسابات · المستحق دلوقتي ${money(tot)}</h2>${picker}</div><p class="note">ده الشهر الحالي. كل مجموعة مرتبة من أعلى مستحقات لأقل. الدكتور بيتحاسب على المحاضرات اللي سلّمها بس، واللي ماسلّمهاش بتترحّل للفترة اللي بعدها. اختار شهر قديم من فوق عشان تشوف حساباته.</p>
+    ${groups.map(([role, title]) => { const rs = rows.filter(x => x.role === role); if (!rs.length) return ''; const sub = rs.reduce((a, x) => a + x.net, 0);
+      return `<section class="panel" style="padding:10px 12px"><div class="row sp"><h3 style="margin:0">${title}</h3><b>${money(sub)}</b></div><table class="stack"><thead><tr><th class="n">#</th><th>الاسم</th><th class="n">الأساسي</th><th class="n">بونص</th><th class="n">خصومات</th><th class="n">الصافي</th>${role === 'doctor' ? '<th class="n">محاضرات</th>' : ''}<th>التحويل</th><th></th></tr></thead><tbody>${rs.map((x, i) => `<tr class="click" data-fin="${x.id}"><td class="n">${i + 1}</td><td><b>${esc(x.name)}</b></td><td class="n">${money(x.gross)}</td><td class="n">${money(x.bonus)}</td><td class="n${x.deductions ? ' red' : ''}">${money(x.deductions)}</td><td class="n"><b>${money(x.net)}</b></td>${role === 'doctor' ? `<td class="n">${x.lectures}${x.pending ? ` <span class="mut">(+${x.pending} مفتوحة)</span>` : ''}</td>` : ''}<td>${x.payout ? '<span class="ok">متسجلة ✓</span>' : '<span class="mut">مش متسجلة</span>'}</td><td><button class="btn g sm">فتح</button></td></tr>`).join('')}</tbody></table></section>`; }).join('')}`;
+  } else {
+    const paid = rows.filter(x => !x.unpaid).length;
+    $('#main').innerHTML = `<div class="row sp"><h2>حسابات ${esc(month)} · ${money(tot)}</h2>${picker}</div><p class="note">ده هيستوري الشهر: اللي اتقفل حسابه فيه، واتدفع ولا لأ، وأكد الاستلام ولا لأ. اتدفع ${paid} من ${rows.length}.</p>
+    ${rows.length ? groups.map(([role, title]) => { const rs = rows.filter(x => x.role === role); if (!rs.length) return ''; const sub = rs.reduce((a, x) => a + x.net, 0);
+      return `<section class="panel" style="padding:10px 12px"><div class="row sp"><h3 style="margin:0">${title}</h3><b>${money(sub)}</b></div><table class="stack"><thead><tr><th class="n">#</th><th>الاسم</th><th class="n">الإجمالي</th><th class="n">بونص</th><th class="n">خصومات</th><th class="n">الصافي</th>${role === 'doctor' ? '<th class="n">محاضرات</th>' : ''}<th>الدفع</th><th>الاستلام</th><th></th></tr></thead><tbody>${rs.map((x, i) => `<tr class="click" data-fin="${x.id}"><td class="n">${i + 1}</td><td><b>${esc(x.name)}</b>${x.n > 1 ? `<div class="mut">${x.n} تقفيلات</div>` : ''}</td><td class="n">${money(x.gross)}</td><td class="n">${money(x.bonus)}</td><td class="n${x.deductions ? ' red' : ''}">${money(x.deductions)}</td><td class="n"><b>${money(x.net)}</b></td>${role === 'doctor' ? `<td class="n">${x.lectures}</td>` : ''}<td>${x.unpaid ? '<span class="red">لسه</span>' : `<span class="ok">اتدفع ✓</span><div class="mut">${fmt(x.paid_at)}</div>`}</td><td>${x.confirmed_at ? `<span class="ok">استلم ✓</span><div class="mut">${fmt(x.confirmed_at)}</div>` : x.problem ? '<span class="red">فيه مشكلة</span>' : x.sent ? '<span class="mut">مستني تأكيده</span>' : '<span class="mut">—</span>'}</td><td><a class="btn g sm" style="display:inline-flex;align-items:center;text-decoration:none" href="/api/settlements/${x.last_sid}/pdf" target="_blank" rel="noopener" data-stop>كشف PDF</a></td></tr>`).join('')}</tbody></table></section>`; }).join('') : empty('مفيش حسابات اتقفلت في الشهر ده')}
+    ${r.open.length ? `<section class="panel"><h3>ماتقفلش حسابهم في ${esc(month)} (${r.open.length})</h3><p>${r.open.map(x => `<button class="btn g sm" data-finu="${x.id}" style="margin:2px">${esc(x.name)} · ${ROLE[x.role]}</button>`).join(' ')}</p></section>` : ''}`;
+  }
+  $('#fmon').onchange = () => { const v = $('#fmon').value; cache.fmonth = v && v <= cur ? v : cur; V.finance(); };
+  document.querySelectorAll('[data-fin]').forEach(x => (x.onclick = e => { if (e.target.closest('[data-stop]')) return; openFinance(Number(x.dataset.fin)); }));
 };
 const PAYOUT = { vodafone: 'فودافون كاش', instapay: 'إنستاباي', bank: 'حساب بنكي' };
 const cp = v => v ? `<span class="row" style="gap:6px;display:inline-flex"><b dir="ltr">${esc(v)}</b><button type="button" class="btn g sm" data-copy="${esc(v)}" style="min-height:28px;padding:0 8px">نسخ</button></span>` : '—';
@@ -391,6 +423,9 @@ function contactBtns(u) {
   if (u.tg_username) b.push(`<a class="btn g sm" style="display:inline-flex;align-items:center;text-decoration:none" href="https://t.me/${encodeURIComponent(u.tg_username)}" target="_blank" rel="noopener">تليجرام @${esc(u.tg_username)}</a>`);
   return b.length ? `<div class="row">${b.join('')}</div>` : '<p class="mut">مفيش بيانات تواصل متسجلة.</p>';
 }
+function bindNoteDel(after) { document.querySelectorAll('[data-ndel]').forEach(b => (b.onclick = async () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'متأكد؟'; return; } await api('DELETE', '/api/notes/' + b.dataset.ndel); toast('اتمسحت'); after(); })); }
+const trStatus = t => (!t.needs_confirm ? '' : t.confirmed_at ? `<span class="p ok">استلم ✓ ${fmt(t.confirmed_at)}</span>` : t.problem ? '<span class="p bad">فيه مشكلة</span>' : '<span class="p pd">مستني تأكيده</span>');
+const notesHtml = ns => ns.map(n => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(n.created_at)} · ${esc(n.author || '—')} (${ROLE[n.author_role] || ''})</span>${n.mine ? ` <button class="btn g sm" data-ndel="${n.id}" style="min-height:26px;padding:0 8px">مسح</button>` : ''}<div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('');
 function finBody(f, admin) {
   return `<div class="kpis" style="margin-top:0">${kpi(money(f.gross), f.user.role === 'doctor' ? 'المحاضرات' : 'الأساسي')}${kpi(money(f.bonus), 'بونص')}${kpi(money(f.deductions), 'خصومات', f.deductions)}${kpi(money(f.net), 'الصافي')}</div>
   ${f.user.role === 'doctor' ? `<p>${Object.entries(f.byType).map(([t, x]) => `${TY()[t]}: ${x.n} محاضرة = ${money(x.sum)}`).join(' · ') || 'مفيش محاضرات مسلّمة لسه'}${f.pendingLecs ? ` <span class="mut">· ${f.pendingLecs} محاضرة لسه ماتسلمتش وهتتحسب لما تتسلم</span>` : ''}</p>` : `<p>المرتب: ${money(f.salary)}</p>`}
@@ -398,20 +433,24 @@ function finBody(f, admin) {
   ${f.lecs.length ? `<details><summary>تفاصيل المحاضرات (${f.lecs.length})</summary><table class="stack"><tbody>${f.lecs.map(l => `<tr><td>#${l.id} ${esc(l.name)}</td><td>${TY()[l.type]}</td><td class="n">${money(l.price)}</td><td>${fmt(l.delivered_at)}</td></tr>`).join('')}</tbody></table></details>` : ''}
   ${admin ? `<p><button type="button" class="btn g sm" data-imp2="${f.user.id}">ادخل على حسابه</button></p><h3 style="margin-top:16px">طريقة التحويل</h3>${payoutHtml(f.payout || [], false)}
   <h3 style="margin-top:16px">التواصل</h3>${contactBtns(f.user)}
-  <form id="trf" class="panel" style="margin-top:10px"><h3>إرسال إيصال التحويل أو ملاحظة</h3><p class="mut">هيوصله على البوت مباشرة${f.user.linked ? '' : ' <span class="red">(مش رابط البوت، فمش هيوصله)</span>'}.</p><label>إيصال التحويل (صورة أو PDF)<input type="file" name="receipt" accept="image/*,.pdf"></label><label>ملاحظة (أو المشكلة في التحويل)<textarea name="note" placeholder="مثلاً: اتحوّل 2400 على فودافون كاش، أو: الرقم ده مش شغال ابعتلي رقم تاني"></textarea></label><button class="btn a">إرسال</button></form>
-  ${(f.transfers || []).length ? `<h3>رسايل الحسابات اللي اتبعتت</h3>${f.transfers.map(t => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(t.created_at)}</span> ${t.delivered ? '<span class="ok">وصلت ✓</span>' : '<span class="red">ماوصلتش</span>'}${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}</div>`).join('')}` : ''}` : ''}
-  <h3 style="margin-top:16px">التقفيلات السابقة</h3>${f.settlements.length ? `<table class="stack"><thead><tr><th>الفترة</th><th>النوع</th><th class="n">الصافي</th><th>الدفع</th></tr></thead><tbody>${f.settlements.map(s => `<tr><td>${esc(s.period)}</td><td>${s.kind === 'early' ? 'معجّل' : 'شهري'}</td><td class="n">${money(s.net)}</td><td>${s.paid_at ? `<span class="ok">اتدفع ${fmt(s.paid_at)}</span>` : admin ? `<button class="btn sm g" data-paid="${s.id}">تم الدفع</button>` : 'لسه'}${admin ? ` <button class="btn sm g" data-del="settlements/${s.id}">إلغاء التقفيل</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="mut">مفيش</p>'}`;
+  <form id="trf" class="panel" style="margin-top:10px"><h3>إرسال إيصال التحويل أو ملاحظة</h3><p class="mut">هيوصله على البوت مباشرة${f.user.linked ? '' : ' <span class="red">(مش رابط البوت، فمش هيوصله)</span>'}.</p><label>إيصال التحويل (صورة أو PDF)<input type="file" name="receipt" accept="image/*,.pdf"></label><label>ملاحظة (أو المشكلة في التحويل)<textarea name="note" placeholder="مثلاً: اتحوّل 2400 على فودافون كاش، أو: الرقم ده مش شغال ابعتلي رقم تاني"></textarea></label>${f.settlements.length ? `<label>ابعت معاه كشف الحساب<select name="settlement_id">${opts(f.settlements.map(s => [s.id, `${s.period} · ${money(s.net)}`]), f.settlements[0].id, 'من غير كشف')}</select></label>` : ''}<label class="chk"><input type="checkbox" name="confirm" value="1" checked> يأكد إنه استلم (هيظهرله زرار "استلمت ✓" و"فيه مشكلة")</label><button class="btn a">إرسال</button></form>
+  ${(f.transfers || []).length ? `<h3>رسايل الحسابات اللي اتبعتت</h3>${f.transfers.map(t => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(t.created_at)}</span> ${t.delivered ? '<span class="ok">وصلت ✓</span>' : '<span class="red">ماوصلتش</span>'} ${trStatus(t)}${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.problem ? `<div class="red">المشكلة: ${esc(t.problem)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}</div>`).join('')}` : ''}` : ''}
+  <h3 style="margin-top:16px">التقفيلات السابقة</h3>${f.settlements.length ? `<table class="stack"><thead><tr><th>الفترة</th><th>النوع</th><th class="n">الصافي</th><th>الدفع</th></tr></thead><tbody>${f.settlements.map(s => `<tr><td>${esc(s.period)}</td><td>${s.kind === 'early' ? 'معجّل' : 'شهري'}</td><td class="n">${money(s.net)}</td><td>${s.paid_at ? `<span class="ok">اتدفع ${fmt(s.paid_at)}</span>` : admin ? `<button class="btn sm g" data-paid="${s.id}">تم الدفع</button>` : 'لسه'} <a class="btn sm g" style="display:inline-flex;align-items:center;text-decoration:none" href="/api/settlements/${s.id}/pdf" target="_blank" rel="noopener">كشف PDF</a>${admin ? ` <button class="btn sm g" data-stsend="${s.id}">ابعته على البوت</button> <button class="btn sm g" data-del="settlements/${s.id}">إلغاء التقفيل</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="mut">مفيش</p>'}
+  ${f.notes && f.notes.length ? `<h3 style="margin-top:16px">ملاحظات الفريق على الدكتور</h3>${notesHtml(f.notes)}` : ''}`;
 }
-async function openFinance(id) {
-  const f = await api('GET', '/api/finance/' + id);
+async function openFinance(id, period) {
+  const per = period || ME.today.slice(0, 7), f = await api('GET', `/api/finance/${id}?period=${per}`);
   modal(`<b>${esc(f.user.name)}</b> <span class="mut">${ROLE[f.user.role]}</span>`, finBody(f, true) + `<div class="panel" style="margin-top:14px"><h3>إضافة</h3><form id="bf" class="row"><select name="what" style="width:auto">${opts([['bonuses', 'بونص'], ['extra', 'مستحق إضافي (زي مرتب متغير)']], 'bonuses')}</select><input name="amount" type="number" step="0.01" placeholder="المبلغ" required style="width:9em"><input name="note" placeholder="ملاحظة" style="flex:1"><button class="btn sm">إضافة</button></form></div>
-  <div class="panel"><h3>التقفيل</h3><div class="row"><input id="per" value="${esc(ME.today.slice(0, 7))}" style="width:9em" dir="ltr"><button class="btn a" id="sm">تقفيل شهري (${money(f.net)})</button><button class="btn g" id="se">تقفيل معجّل</button></div><p class="mut">التقفيل بيقفل كل المبالغ اللي فوق، وأي حاجة بعد كده بتدخل في الفترة الجاية.</p></div>`);
-  $('#trf').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target); if (!String(fd.get('note')).trim() && !(fd.get('receipt') && fd.get('receipt').size)) return toast('اكتب ملاحظة أو ارفع الإيصال'); const btn = e.target.querySelector('button'); btn.disabled = true; try { const r = await api('POST', `/api/finance/${id}/message`, fd); toast(r.delivered ? 'اتبعت على البوت ✓' : 'اتسجلت بس ماوصلتش (مش رابط البوت)'); openFinance(id); } catch { btn.disabled = false; } };
-  $('#bf').onsubmit = async e => { e.preventDefault(); const x = Object.fromEntries(new FormData(e.target)); await api('POST', '/api/' + x.what, { user_id: id, amount: x.amount, note: x.note }); toast('اتضاف'); openFinance(id); V.finance(); };
-  const settle = async kind => { await api('POST', `/api/finance/${id}/settle`, { kind, period: $('#per').value }); toast('اتقفل'); openFinance(id); V.finance(); };
+  <div class="panel"><h3>التقفيل</h3><div class="row"><label class="row" style="gap:6px;margin:0">شهر <input type="month" id="per" value="${esc(per)}" max="${esc(ME.today.slice(0, 7))}" style="width:auto" dir="ltr"></label><button class="btn a" id="sm">تقفيل شهر ${esc(per)} (${money(f.net)})</button><button class="btn g" id="se">تقفيل معجّل</button></div><p class="mut">التقفيل الشهري بياخد المحاضرات اللي اتبعتت في الشهر ده واتسلمت، والمرتب والبونص والخصومات اللي فوق. اللي لسه ماتسلمش بيترحّل للشهر اللي بعده. لو غيّرت الشهر الأرقام فوق بتتحدث.</p></div>`);
+  $('#per').onchange = () => openFinance(id, $('#per').value || undefined);
+  document.querySelectorAll('[data-stsend]').forEach(b => (b.onclick = async () => { b.disabled = true; try { await api('POST', `/api/settlements/${b.dataset.stsend}/send`); toast('الكشف اتبعت على البوت ✓'); } catch { b.disabled = false; } }));
+  bindNoteDel(() => openFinance(id, per));
+  $('#trf').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target); if (!fd.get('confirm')) fd.set('confirm', '0'); if (!String(fd.get('note')).trim() && !(fd.get('receipt') && fd.get('receipt').size)) return toast('اكتب ملاحظة أو ارفع الإيصال'); const btn = e.target.querySelector('button'); btn.disabled = true; try { const r = await api('POST', `/api/finance/${id}/message`, fd); toast(r.delivered ? 'اتبعت على البوت ✓' : 'اتسجلت بس ماوصلتش (مش رابط البوت)'); openFinance(id, per); } catch { btn.disabled = false; } };
+  $('#bf').onsubmit = async e => { e.preventDefault(); const x = Object.fromEntries(new FormData(e.target)); await api('POST', '/api/' + x.what, { user_id: id, amount: x.amount, note: x.note }); toast('اتضاف'); openFinance(id, per); V.finance(); };
+  const settle = async kind => { await api('POST', `/api/finance/${id}/settle`, { kind, period: $('#per').value }); toast('اتقفل'); openFinance(id, per); V.finance(); };
   $('#sm').onclick = () => settle('month'); $('#se').onclick = () => settle('early');
-  document.querySelectorAll('[data-paid]').forEach(b => (b.onclick = async () => { await api('PATCH', '/api/settlements/' + b.dataset.paid); toast('اتسجل الدفع'); openFinance(id); }));
-  document.querySelectorAll('[data-del]').forEach(b => (b.onclick = async () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'متأكد؟'; return; } await api('DELETE', '/api/' + b.dataset.del); toast('اتمسح'); openFinance(id); V.finance(); }));
+  document.querySelectorAll('[data-paid]').forEach(b => (b.onclick = async () => { await api('PATCH', '/api/settlements/' + b.dataset.paid); toast('اتسجل الدفع'); openFinance(id, per); }));
+  document.querySelectorAll('[data-del]').forEach(b => (b.onclick = async () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'متأكد؟'; return; } await api('DELETE', '/api/' + b.dataset.del); toast('اتمسح'); openFinance(id, per); V.finance(); }));
 }
 
 /* ----- subscriptions (cs/admin) ----- */
@@ -459,13 +498,33 @@ V.account = async () => {
   <form id="pw" class="panel"><h3>تغيير كلمة المرور</h3><div class="two"><label>الحالية<input type="password" name="old" required></label><label>الجديدة (8 حروف على الأقل)<input type="password" name="new" minlength="8" required></label></div><button class="btn sm">تغيير</button></form>`;
   $('#pw').onsubmit = async e => { e.preventDefault(); await api('POST', '/api/me/password', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('اتغيرت'); };
   if ($('#ctf')) { $('#ctf').onsubmit = async e => { e.preventDefault(); await api('PUT', '/api/me/contact', Object.fromEntries(new FormData(e.target))); toast('اتحفظت ✓'); ME = await api('GET', '/api/me'); };
-    api('GET', '/api/me/transfers').then(ts => { if (!ts.length) return; $('#trl').hidden = false; $('#trc').innerHTML = ts.map(t => `<div style="border-bottom:1px solid var(--line);padding:6px 0"><span class="mut">${fmt(t.created_at)}</span>${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}</div>`).join(''); }); }
+    const loadTr = () => api('GET', '/api/me/transfers').then(ts => { if (!ts.length) return; $('#trl').hidden = false;
+      $('#trc').innerHTML = ts.map(t => `<div style="border-bottom:1px solid var(--line);padding:8px 0"><span class="mut">${fmt(t.created_at)}</span> ${trStatus(t)}${t.note ? `<div>${esc(t.note)}</div>` : ''}${t.has_file ? `<a href="/api/transfers/${t.id}/file" target="_blank" rel="noopener">${esc(t.file_name || 'الإيصال')}</a>` : ''}${t.settlement_id ? `${t.has_file ? ' · ' : ''}<a href="/api/settlements/${t.settlement_id}/pdf" target="_blank" rel="noopener">كشف الحساب PDF</a>` : ''}${t.problem ? `<div class="red">المشكلة اللي بلّغت عنها: ${esc(t.problem)}</div>` : ''}
+        ${t.needs_confirm && !t.confirmed_at && !t.problem ? `<div class="row" style="margin-top:6px"><button class="btn a sm" data-trc="${t.id}">استلمت ✓</button><button class="btn g sm" data-trx="${t.id}">فيه مشكلة</button></div>` : ''}</div>`).join('');
+      document.querySelectorAll('[data-trc]').forEach(b => (b.onclick = async () => { await api('POST', `/api/me/transfers/${b.dataset.trc}/confirm`); toast('اتسجل إنك استلمت ✓'); loadTr(); }));
+      document.querySelectorAll('[data-trx]').forEach(b => (b.onclick = () => { modal('<b>مشكلة في التحويل</b>', '<form id="txf"><textarea name="text" required placeholder="مثلاً: التحويل ماوصلش، أو المبلغ ناقص"></textarea><button class="btn a">إرسال للإدارة</button></form>'); $('#txf').onsubmit = async e => { e.preventDefault(); await api('POST', `/api/me/transfers/${b.dataset.trx}/problem`, { text: new FormData(e.target).get('text') }); dlg.close(); toast('وصلت للإدارة ✓'); loadTr(); }; }));
+    });
+    loadTr(); }
   if ($('#pyf')) {
     const loadPy = async () => { $('#pyl').innerHTML = payoutHtml(await api('GET', '/api/me/payout'), true); document.querySelectorAll('[data-pdel]').forEach(b => (b.onclick = async () => { await api('DELETE', '/api/me/payout/' + b.dataset.pdel); toast('اتمسحت'); loadPy(); })); };
     const tog = () => { const bank = $('#pyk').value === 'bank'; $('#pyb').hidden = !bank; $('#pyn').hidden = bank; };
     $('#pyk').onchange = tog; tog(); loadPy();
     $('#pyf').onsubmit = async e => { e.preventDefault(); await api('POST', '/api/me/payout', Object.fromEntries(new FormData(e.target))); e.target.reset(); tog(); toast('اتحفظت ✓'); loadPy(); };
   }
+};
+
+/* ----- audit log (admin) ----- */
+V.audit = async () => {
+  const f = cache.audit || {}, qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
+  const r = await api('GET', '/api/audit?' + qs);
+  const row = a => `<tr><td class="mut" style="white-space:nowrap">${fmt(a.at)}</td><td><b>${esc(a.name)}</b><div class="mut">${ROLE[a.role] || ''}${a.admin_name ? ` · <span class="red">الأدمن ${esc(a.admin_name)} وهو داخل على حسابه</span>` : ''}</div></td><td>${esc(a.what)}${a.target ? `<div><b>${esc(a.target)}</b></div>` : ''}${a.extra ? `<div class="mut">${esc(a.extra)}</div>` : ''}</td></tr>`;
+  $('#main').innerHTML = `<h2>سجل العمليات</h2><p class="note">كل حاجة اتعملت في اللوحة والبوت: مين عمل إيه وإمتى. الأحدث فوق.</p>
+  <div class="panel row"><select id="auu" style="width:auto">${opts(r.users.map(x => [x.id, `${x.name} · ${ROLE[x.role]}`]), f.user, 'كل الناس')}</select><input type="date" id="aud" value="${esc(f.day || '')}" style="width:auto"><button class="btn g sm" id="aur">مسح الفلتر</button></div>
+  <div class="panel" style="padding:6px 10px">${r.rows.length ? `<table class="stack"><thead><tr><th>الوقت</th><th>مين</th><th>عمل إيه</th></tr></thead><tbody id="aub">${r.rows.map(row).join('')}</tbody></table>` : empty('مفيش عمليات')}${r.more ? '<button class="btn g sm" id="aum" style="margin-top:8px">أقدم</button>' : ''}</div>`;
+  const set = () => { cache.audit = { user: $('#auu').value, day: $('#aud').value }; V.audit(); };
+  $('#auu').onchange = set; $('#aud').onchange = set; $('#aur').onclick = () => { cache.audit = {}; V.audit(); };
+  let more = r.more;
+  if ($('#aum')) $('#aum').onclick = async () => { const x = await api('GET', '/api/audit?' + new URLSearchParams({ ...Object.fromEntries(Object.entries(f).filter(([, v]) => v)), before: more })); $('#aub').insertAdjacentHTML('beforeend', x.rows.map(row).join('')); more = x.more; if (!more) $('#aum').remove(); };
 };
 
 /* ----- settings (admin) ----- */

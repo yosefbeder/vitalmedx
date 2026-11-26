@@ -6,6 +6,7 @@ COPY package.json ./
 COPY src ./src
 COPY public ./public
 COPY scripts ./scripts
+COPY assets ./assets
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 EXPOSE 3000

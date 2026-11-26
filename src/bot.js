@@ -16,13 +16,14 @@ async function call(method, params) {
     return j.ok ? j.result : null;
   } catch (e) { console.error('tg', method, e.message); return null; }
 }
-async function sendFile(method, field, chat_id, buf, filename, caption, mime, replyTo) {
+async function sendFile(method, field, chat_id, buf, filename, caption, mime, replyTo, markup) {
   if (!enabled()) return null;
   try {
     const fd = new FormData();
     fd.append('chat_id', String(chat_id));
     if (caption) fd.append('caption', caption.slice(0, 1024));
     if (replyTo) fd.append('reply_to_message_id', String(replyTo));
+    if (markup) fd.append('reply_markup', JSON.stringify(markup));
     fd.append(field, new Blob([buf], { type: mime || 'application/octet-stream' }), filename);
     const r = await fetch(`${API}/${method}`, { method: 'POST', body: fd });
     const j = await r.json();
@@ -112,6 +113,19 @@ async function remind(l, overdue) {
   const miss = [!l.video_at && 'الفيديو', !l.q_at && 'ملف الأسئلة'].filter(Boolean).join(' و');
   await send(d.tg_id, overdue ? `تنبيه: مهلة المحاضرة #${l.id} خلصت، والتأخير بيتسجل.\n${l.name}\nناقص: ${miss}` : `تذكير: باقي ${L.fmtDur(l.sent_at + L.deadline() - Date.now())} على تسليم المحاضرة #${l.id}\n${l.name}\nناقص: ${miss}`);
 }
+async function lateAlert(l) {
+  const b = one('SELECT b.code, c.name cn, c.tg_id ct, s.name sn, s.tg_id st FROM batches b LEFT JOIN users c ON c.id=b.coordinator_id LEFT JOIN users s ON s.id=b.supervisor_id WHERE b.id=?', l.batch_id) || {};
+  const d = one('SELECT name FROM users WHERE id=?', l.doctor_id) || {};
+  const miss = [!l.video_at && 'الفيديو', !l.q_at && 'ملف الأسئلة'].filter(Boolean).join(' و');
+  const txt = `⚠️ تأخير: ${d.name || 'الدكتور'} اتأخر عن محاضرة ${l.name} – دفعة ${b.code || ''}\nناقص: ${miss}\nاتبعتت: ${fmt(l.sent_at)} · الديدلاين: ${fmt(l.sent_at + L.deadline())}\nالمسؤول: ${b.cn || '—'} · المشرف: ${b.sn || '—'}`;
+  const sent = new Set();
+  const to = async chat => { if (!chat || sent.has(String(chat))) return; sent.add(String(chat)); await send(chat, txt); };
+  await remind(l, true); // the doctor gets his own message (no batch/university info)
+  await to(b.ct); await to(b.st);
+  if (adminChat()) await to(adminChat());
+  for (const a of all("SELECT tg_id FROM users WHERE role='admin' AND active=1 AND tg_id IS NOT NULL")) await to(a.tg_id);
+  return txt;
+}
 const adminChat = () => process.env.ADMIN_CHAT_ID;
 async function sendAdmin(text) { const sent = new Set(); if (adminChat()) { sent.add(String(adminChat())); await send(adminChat(), text); } for (const a of all("SELECT tg_id FROM users WHERE role='admin' AND active=1 AND tg_id IS NOT NULL")) if (!sent.has(String(a.tg_id))) { sent.add(String(a.tg_id)); await send(a.tg_id, text); } }
 
@@ -141,6 +155,17 @@ async function handleUpdate(u) {
   }
   if (!user) return send(chat, `أهلاً بيك في بوت ${setting('brand')}.\nابعت كود الربط اللي وصلك من الإدارة (بيبدأ بـ VM-).`);
   if (text === '/start') return send(chat, `أهلاً ${user.name} 👋\n/tasks لعرض المحاضرات المفتوحة`);
+  // problem with a transfer (after pressing "فيه مشكلة")
+  const rTo = m.reply_to_message && m.reply_to_message.message_id;
+  const trp = (rTo && one('SELECT * FROM transfer_msgs WHERE user_id=? AND problem_msg_id=?', user.id, rTo)) || (!rTo && text && !text.startsWith('/') && one('SELECT * FROM transfer_msgs WHERE user_id=? AND problem_wait>? AND problem IS NULL ORDER BY id DESC', user.id, Date.now() - 30 * 60e3));
+  if (trp && text) return recordTransferProblem(trp, user, text, chat);
+  if (user.role === 'cs' || (user.role === 'admin' && !text.startsWith('/'))) {
+    const aw = one('SELECT * FROM bot_drafts WHERE tg_id=? AND await_student=1 AND created_at>? ORDER BY id DESC', from, Date.now() - 6 * L.H);
+    if (aw) {
+      if (text && !msgContent(m) && text.length <= 120) return createFromDraft(null, chat, user, aw, text);
+      await createFromDraft(null, chat, user, aw, null); // new message instead of a name: save the old one without a student
+    }
+  }
   if (user.role === 'cs' || (user.role === 'admin' && !text.startsWith('/'))) {
     const c = msgContent(m), body = (text || m.caption || '').trim();
     if (!c && !body) return send(chat, 'ابعت سؤال الطالب هنا (نص أو ريكورد أو صورة)، وأنا هوصّله لمسؤول الدفعة.');
@@ -186,7 +211,8 @@ async function handleUpdate(u) {
 }
 async function onCallback(q) {
   const from = String(q.from.id), chat = q.message && q.message.chat.id;
-  if (/^(k|tb|tl|td|tr|tc|tp):/.test(q.data || '')) return onTicketCallback(q, from, chat);
+  if (/^(k|tb|tl|ts|td|tr|tc|tp):/.test(q.data || '')) return onTicketCallback(q, from, chat);
+  if (/^(rc|rx):/.test(q.data || '')) return onTransferCallback(q, from, chat);
   const m = /^p:(\d+):(\d+)$/.exec(q.data || '');
   const user = one("SELECT * FROM users WHERE tg_id=? AND role='doctor' AND active=1", from);
   if (!m || !user) return call('answerCallbackQuery', { callback_query_id: q.id });
@@ -210,7 +236,7 @@ const editMsg = (q, text) => (q.message ? call('editMessageReplyMarkup', { chat_
 async function onTicketCallback(q, from, chat) {
   const user = one('SELECT * FROM users WHERE tg_id=? AND active=1', from); if (!user) return ans(q);
   const [k, a, b] = q.data.split(':'); const n = Date.now();
-  if (k === 'k' || k === 'tb' || k === 'tl') {
+  if (k === 'k' || k === 'tb' || k === 'tl' || k === 'ts') {
     if (!['cs', 'admin'].includes(user.role)) return ans(q, 'مش مسموح');
     const dr = one('SELECT * FROM bot_drafts WHERE id=? AND tg_id=?', Number(a), from); if (!dr) return ans(q, 'الطلب ده انتهى، ابعت السؤال تاني');
     if (k === 'k') {
@@ -221,11 +247,13 @@ async function onTicketCallback(q, from, chat) {
     }
     if (k === 'tb') {
       run('UPDATE bot_drafts SET batch_id=? WHERE id=?', Number(b), dr.id); await ans(q);
-      if (dr.kind === 'problem') return createFromDraft(q, user, { ...dr, batch_id: Number(b) }, null);
+      if (dr.kind === 'problem') return askStudent(q, chat, dr.id, null);
       const ls = all('SELECT id, name FROM lectures WHERE batch_id=? ORDER BY sent_at DESC LIMIT 10', Number(b));
       return editMsg(q, 'على أنهي محاضرة؟').then(() => send(chat, 'اختار المحاضرة:', { reply_markup: { inline_keyboard: [...ls.map(l => [{ text: `#${l.id} ${l.name}`.slice(0, 60), callback_data: `tl:${dr.id}:${l.id}` }]), [{ text: 'مش متأكد / من غير محاضرة', callback_data: `tl:${dr.id}:0` }]] } }));
     }
-    await ans(q); return createFromDraft(q, user, dr, Number(b) || null);
+    await ans(q);
+    if (k === 'tl') return askStudent(q, chat, dr.id, Number(b) || null);
+    return createFromDraft(q, chat, user, dr, null); // ts = skip student
   }
   const t = one('SELECT * FROM tickets WHERE id=?', Number(a)); if (!t) return ans(q, 'التذكرة مش موجودة');
   const coordOk = user.role === 'admin' || (user.role === 'coordinator' && one('SELECT 1 FROM batches WHERE id=? AND coordinator_id=?', t.batch_id, user.id));
@@ -250,23 +278,52 @@ async function onTicketCallback(q, from, chat) {
   }
   if (k === 'tp') {
     if (!(coordOk || user.role === 'cs')) return ans(q, 'مش مسموح'); if (t.closed_at) return ans(q, 'اتقفلت قبل كده');
-    run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', `اتحلت (${user.name} من البوت)`, n, t.id);
+    run('UPDATE tickets SET resolution=?, closed_at=? WHERE id=?', `اتحلت (${user.name} من البوت)`, n, t.id); audit(user.id, 'ticket_bot_close', { id: t.id });
     await ans(q, 'اتقفلت ✓'); return editMsg(q, `المشكلة #${t.id} اتقفلت ✓`);
   }
   return ans(q);
 }
-async function createFromDraft(q, user, dr, lectureId) {
+async function askStudent(q, chat, draftId, lectureId) {
+  run('UPDATE bot_drafts SET lecture_id=?, await_student=1, created_at=? WHERE id=?', lectureId, Date.now(), draftId);
+  return editMsg(q, 'تمام.').then(() => send(chat, 'اسم الطالب أو رقمه؟ اكتبه هنا، أو دوس تخطي.', { reply_markup: { inline_keyboard: [[{ text: 'تخطي', callback_data: `ts:${draftId}` }]] } }));
+}
+async function createFromDraft(q, chat, user, dr, student) {
+  const lectureId = dr.lecture_id;
   const lec = lectureId ? one('SELECT id, doctor_id FROM lectures WHERE id=? AND batch_id=?', lectureId, dr.batch_id) : null;
   const body = dr.body || (dr.file_kind === 'voice' || dr.file_kind === 'audio' ? '[سؤال صوتي]' : '[سؤال مرفق]');
-  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,created_by,created_at,att_file_id,att_kind,att_mime,att_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-    dr.kind || 'question', dr.batch_id, lec ? lec.id : null, lec ? lec.doctor_id : null, body, user.id, Date.now(), dr.file_id, dr.file_kind, dr.file_kind ? KIND_MIME[dr.file_kind] : null, dr.file_kind ? `${dr.file_kind}` : null);
+  const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at,att_file_id,att_kind,att_mime,att_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    dr.kind || 'question', dr.batch_id, lec ? lec.id : null, lec ? lec.doctor_id : null, body, student ? String(student).slice(0, 120) : null, user.id, Date.now(), dr.file_id, dr.file_kind, dr.file_kind ? KIND_MIME[dr.file_kind] : null, dr.file_kind ? `${dr.file_kind}` : null);
   run('DELETE FROM bot_drafts WHERE id=?', dr.id);
   const t = one('SELECT * FROM tickets WHERE id=?', Number(r.lastInsertRowid));
+  audit(user.id, 'ticket_bot_new', { id: t.id });
   await notifyCoordNew(t);
   const c = one('SELECT u.name, u.tg_id FROM batches b LEFT JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id) || {};
-  return editMsg(q, `${t.kind === 'problem' ? 'المشكلة' : 'السؤال'} اتسجل #${t.id} ✓\nووصل لـ ${c.name || 'مسؤول الدفعة'}${c.tg_id ? '' : ' (مش رابط البوت، هيشوفه من اللوحة)'}.${t.kind === 'question' ? '\nهبعتلك الرد هنا أول ما يرجع.' : ''}`);
+  const msg = `${t.kind === 'problem' ? 'المشكلة' : 'السؤال'} اتسجل #${t.id} ✓\nووصل لـ ${c.name || 'مسؤول الدفعة'}${c.tg_id ? '' : ' (مش رابط البوت، هيشوفه من اللوحة)'}.${t.kind === 'question' ? '\nهبعتلك الرد هنا أول ما يرجع.' : ''}`;
+  return q ? editMsg(q, msg) : send(chat, msg);
+}
+const transferKb = id => ({ inline_keyboard: [[{ text: 'استلمت ✓', callback_data: `rc:${id}` }, { text: 'فيه مشكلة', callback_data: `rx:${id}` }]] });
+async function recordTransferProblem(tr, user, text, chat) {
+  run('UPDATE transfer_msgs SET problem=?, problem_at=?, problem_wait=NULL WHERE id=?', String(text).slice(0, 1000), Date.now(), tr.id);
+  audit(user.id, 'transfer_problem', { id: tr.id });
+  await sendAdmin(`⚠️ ${user.name} عنده مشكلة في التحويل:\n${text}\n\nراجعها من الحسابات.`);
+  return chat ? send(chat, 'المشكلة وصلت للإدارة ✓ وهيتواصلوا معاك.') : null;
+}
+async function confirmTransfer(tr, user) {
+  run('UPDATE transfer_msgs SET confirmed_at=?, problem_wait=NULL WHERE id=?', Date.now(), tr.id);
+  audit(user.id, 'transfer_confirm', { id: tr.id });
+  await sendAdmin(`✓ ${user.name} أكد استلام التحويل.`);
+}
+async function onTransferCallback(q, from, chat) {
+  const user = one('SELECT * FROM users WHERE tg_id=? AND active=1', from); if (!user) return ans(q);
+  const [k, a] = q.data.split(':'); const tr = one('SELECT * FROM transfer_msgs WHERE id=? AND user_id=?', Number(a), user.id);
+  if (!tr) return ans(q, 'مش موجود');
+  if (tr.confirmed_at) return ans(q, 'اتأكد قبل كده');
+  if (k === 'rc') { await confirmTransfer(tr, user); await ans(q, 'تمام ✓'); return editMsg(q, 'اتسجل إنك استلمت التحويل ✓ شكراً.'); }
+  await ans(q);
+  const m = await send(chat, 'اكتب المشكلة في التحويل (اعمل Reply على الرسالة دي):', { reply_markup: { force_reply: true } });
+  run('UPDATE transfer_msgs SET problem_msg_id=?, problem_wait=? WHERE id=?', m ? m.message_id : null, Date.now(), tr.id);
 }
 async function getFileUrl(fileId) { const f = await call('getFile', { file_id: fileId }); return f ? `${(process.env.TG_API || 'https://api.telegram.org')}/file/bot${process.env.BOT_TOKEN}/${f.file_path}` : null; }
 async function forwardFile(chat_id, fileId, kind, caption) { return call(kind === 'video' ? 'sendVideo' : 'sendDocument', { chat_id, [kind === 'video' ? 'video' : 'document']: fileId, caption }); }
 
-module.exports = { notifyCoordNew, notifyCsReturn, notifyCoordReply, KIND_MIME, call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate, enabled, fmt, money, forwardFile, getFileUrl };
+module.exports = { lateAlert, transferKb, confirmTransfer, recordTransferProblem, notifyCoordNew, notifyCsReturn, notifyCoordReply, KIND_MIME, call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate, enabled, fmt, money, forwardFile, getFileUrl };
