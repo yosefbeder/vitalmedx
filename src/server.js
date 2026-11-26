@@ -11,14 +11,14 @@ const PDF = require('./pdf');
 const { DATA_DIR } = require('./db');
 const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.7.1';
+const VERSION = '1.8.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
 const MAX_BODY = 50 * 1024 * 1024;
 
-class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
-const fail = (code, msg) => { throw new HttpError(code, msg); };
+const ACT_ = require('./actions');
+const { HttpError, fail } = ACT_;
 const need = (u, ...roles) => { if (!roles.includes(u.role)) fail(403, 'مش مسموح'); };
 const int = v => (v === '' || v == null ? null : Number.parseInt(v, 10));
 const real = v => (v === '' || v == null ? null : Number(v));
@@ -176,9 +176,18 @@ route('POST', '/api/batches', async ({ u, body }) => {
   const r = run('INSERT INTO batches(university_id,year,code,supervisor_id,coordinator_id,expected_subs) VALUES(?,?,?,?,?,?)', uni.id, year, code, int(body.supervisor_id), int(body.coordinator_id), int(body.expected_subs) || 0);
   return { id: Number(r.lastInsertRowid) };
 });
+route('POST', '/api/batches/:id/exams', async ({ u, body, p }) => {
+  const id = int(p.id); if (!canBatch(u, id) || !['admin', 'supervisor', 'coordinator'].includes(u.role)) fail(403, 'مش مسموح');
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : fail(400, 'اكتب تاريخ الامتحان');
+  run('INSERT INTO exams(batch_id,date,name,created_by,created_at) VALUES(?,?,?,?,?)', id, d, str(body.name, 200), u.id, Date.now()); return { ok: true };
+});
+route('DELETE', '/api/exams/:id', async ({ u, p }) => {
+  const e = one('SELECT * FROM exams WHERE id=?', int(p.id)) || fail(404, 'مش موجود');
+  if (!canBatch(u, e.batch_id) || !['admin', 'supervisor', 'coordinator'].includes(u.role)) fail(403, 'مش مسموح'); run('DELETE FROM exams WHERE id=?', e.id); return { ok: true };
+});
 route('PATCH', '/api/batches/:id', async ({ u, body, p }) => {
   const id = int(p.id); if (!canBatch(u, id) || u.role === 'cs') fail(403, 'مش مسموح');
-  if ('exam_date' in body) run('UPDATE batches SET exam_date=?, exam_note=? WHERE id=?', str(body.exam_date, 10) || null, str(body.exam_note, 200), id);
+  if (body.exam_date && /^\d{4}-\d{2}-\d{2}$/.test(body.exam_date)) run('INSERT INTO exams(batch_id,date,name,created_by,created_at) VALUES(?,?,?,?,?)', id, body.exam_date, str(body.exam_note, 200), u.id, Date.now());
   if (u.role === 'admin') {
     for (const [k, f] of [['year', v => str(v, 40)], ['code', v => str(v, 20)], ['supervisor_id', int], ['coordinator_id', int], ['expected_subs', int], ['active', int]])
       if (k in body) run(`UPDATE batches SET ${k}=? WHERE id=?`, f(body[k]), id);
@@ -256,25 +265,7 @@ route('GET', '/api/lectures/:id', async ({ u, p }) => {
   const d = sanitizeLecture(l, u); if (u.role !== 'doctor') d.price_log = all('SELECT pl.*, us.name by_name FROM price_log pl LEFT JOIN users us ON us.id=pl.by WHERE lecture_id=? ORDER BY at', l.id);
   return d;
 });
-route('POST', '/api/lectures', async ({ u, body, files }) => {
-  need(u, 'admin', 'coordinator', 'supervisor');
-  const bid = req1(int(body.batch_id), 'الدفعة'); if (!canBatch(u, bid)) fail(403, 'الدفعة دي مش بتاعتك');
-  const did = req1(int(body.doctor_id), 'الدكتور'); const doc = one("SELECT u.*, d.* FROM users u JOIN doctors d ON d.user_id=u.id WHERE u.id=? AND u.active=1", did) || fail(400, 'الدكتور مش موجود');
-  const type = body.type in L.TYPES ? body.type : fail(400, 'النوع غلط');
-  const kind = body.kind in L.KINDS ? body.kind : 'new';
-  const name = req1(str(body.name, 200), 'اسم المحاضرة');
-  const price = kind === 'repeat' ? (real(body.price) ?? fail(400, 'اكتب سعر المحاضرة المعادة بإيدك')) : (real(body.price) ?? doc[`price_${type}`]);
-  const coord = u.role === 'coordinator' ? u.id : (one('SELECT coordinator_id FROM batches WHERE id=?', bid) || {}).coordinator_id || u.id;
-  const noq = body.no_q === true || body.no_q === '1' || body.no_q === 'on', t0 = Date.now(), pr = Math.max(0, Math.min(3, int(body.priority) ?? 1));
-  const r = run('INSERT INTO lectures(batch_id,doctor_id,coordinator_id,type,kind,name,price,sent_at,no_q,q_at,q_ok_at,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', bid, did, coord, type, kind, name, price, t0, noq ? 1 : 0, noq ? t0 : null, noq ? t0 : null, pr);
-  const l = one('SELECT * FROM lectures WHERE id=?', Number(r.lastInsertRowid));
-  const fl = [];
-  if (files.lec) fl.push({ ...files.lec, field: 'lec_file', label: 'ملف المحاضرة' });
-  if (files.qsrc) fl.push({ ...files.qsrc, field: 'src_q_file', label: 'مرجع ملف الأسئلة' });
-  const sent = await bot.sendLecture(l, fl);
-  const today = all('SELECT COUNT(*) n FROM lectures WHERE doctor_id=? AND sent_at>=?', did, L.dayStart())[0].n;
-  return { id: l.id, delivered_to_bot: sent, over_capacity: today > doc.capacity, today, capacity: doc.capacity };
-});
+route('POST', '/api/lectures', async ({ u, body, files }) => ACT_.createLecture(u, body, files));
 route('PATCH', '/api/lectures/:id', async ({ u, body, p }) => {
   const l = one('SELECT * FROM lectures WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
   if (!canBatch(u, l.batch_id) || !['admin', 'coordinator', 'supervisor'].includes(u.role)) fail(403, 'مش مسموح'); // supervisor = everything the coordinator can do, on his batches
@@ -321,7 +312,7 @@ route('GET', '/api/tickets', async ({ u, q }) => {
   const g = L.supGrace(), nm = Object.fromEntries(all('SELECT id, name, role FROM users').map(x => [x.id, x]));
   ts.sort((a, b) => (!!a.closed_at - !!b.closed_at) || (a.closed_at ? b.created_at - a.created_at : (b.priority - a.priority) || ((a.due_at || 9e15) - (b.due_at || 9e15)) || b.created_at - a.created_at));
   return ts.map(({ att_path, reply_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), has_reply_file: !!(reply_path || t.reply_file_id), holder: L.ticketHolder(t), due_late: !!(t.due_at && !t.closed_at && n > t.due_at),
-    by: { sent: nm[t.sent_by], returned: nm[t.returned_by], closed: nm[t.closed_by] }, both_late: L.returnLate(t, g), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
+    by: { sent: nm[t.sent_by], returned: nm[t.returned_by], closed: nm[t.closed_by] }, both_late: L.returnLate(t, g), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : t.returned_at ? 'deliver' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
 route('POST', '/api/tickets', async ({ u, body, files }) => {
@@ -330,7 +321,9 @@ route('POST', '/api/tickets', async ({ u, body, files }) => {
   const kind = body.kind === 'problem' ? 'problem' : 'question';
   const lid = int(body.lecture_id); const lec = lid ? one('SELECT * FROM lectures WHERE id=? AND batch_id=?', lid, bid) : null;
   // general question: straight to a doctor, no lecture
-  const gdoc = !lec && kind === 'question' && int(body.doctor_id) ? one("SELECT id, name FROM users WHERE id=? AND role='doctor' AND active=1", int(body.doctor_id)) || fail(400, 'الدكتور مش موجود') : null;
+  // straight to the doctor (default) — a general question picks the doctor, a lecture question goes to its doctor unless sent to the coordinator
+  const gdoc = kind !== 'question' ? null : !lec && int(body.doctor_id) ? one("SELECT id, name FROM users WHERE id=? AND role='doctor' AND active=1", int(body.doctor_id)) || fail(400, 'الدكتور مش موجود')
+    : lec && body.to !== 'coord' ? one('SELECT id, name FROM users WHERE id=?', lec.doctor_id) : null;
   const att = files.att; const text = str(body.body) || (att ? (/^audio|ogg|opus/.test(att.mime || '') ? '[سؤال صوتي]' : '[سؤال مرفق]') : null);
   const n0 = Date.now();
   const r = run('INSERT INTO tickets(kind,batch_id,lecture_id,doctor_id,body,student,created_by,created_at,priority,due_at,direct,sent_doctor_at,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', kind, bid, lec ? lec.id : null, lec ? lec.doctor_id : gdoc ? gdoc.id : null,
@@ -353,7 +346,12 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
       run('UPDATE tickets SET doctor_id=?, lecture_id=COALESCE(?,lecture_id), sent_doctor_at=?, sent_by=? WHERE id=?', did, int(body.lecture_id), n, u.id, t.id);
       const ok = await bot.sendTicket(one('SELECT * FROM tickets WHERE id=?', t.id));
       return { ok: true, delivered_to_bot: ok }; }
-    case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); break;
+    case 'self_reply': { // the coordinator answers himself → straight to customer service
+      if (!coordOk) fail(403, 'مش مسموح'); if (t.reply_at) fail(400, 'السؤال ده اترد عليه');
+      run('UPDATE tickets SET reply=?, reply_at=?, replied_by=?, returned_at=?, returned_by=? WHERE id=?', req1(str(body.reply, 4000), 'الرد'), n, u.id, n, u.id, t.id);
+      setImmediate(() => bot.notifyCsReturn(one('SELECT * FROM tickets WHERE id=?', t.id)).catch(e => console.error(e))); break;
+    }
+    case 'set_reply': if (!coordOk) fail(403, 'مش مسموح'); run('UPDATE tickets SET reply=?, reply_at=COALESCE(reply_at,?) WHERE id=?', req1(str(body.reply), 'الرد'), n, t.id); if (t.kind === 'question' && !t.returned_at) await bot.afterDoctorReply(one('SELECT * FROM tickets WHERE id=?', t.id)); break;
     case 'return': if (!coordOk || !t.reply_at) fail(400, 'لسه الدكتور مارد'); run('UPDATE tickets SET returned_at=?, returned_by=? WHERE id=? AND returned_at IS NULL', n, u.id, t.id); if (!t.returned_at) await bot.notifyCsReturn(one('SELECT * FROM tickets WHERE id=?', t.id)); break;
     case 'deliver': if (!csOk || !t.returned_at) fail(400, 'الرد لسه مارجعش'); run('UPDATE tickets SET delivered_at=?, delivered_by=?, closed_at=? WHERE id=?', n, u.id, n, t.id); break;
     case 'delete': need(u, 'admin'); for (const f of [t.att_path, t.reply_path]) if (f) fs.rmSync(f, { force: true }); run('DELETE FROM tickets WHERE id=?', t.id); break;
@@ -370,6 +368,44 @@ route('PATCH', '/api/tickets/:id', async ({ u, body, p }) => {
   return { ok: true };
 });
 
+/* ----- chats ----- */
+const pairWhere = '((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))';
+function canSeePair(u, a, b) { // admin: every chat · supervisor: chats that involve his batches' coordinators · others: their own
+  if (u.id === a || u.id === b) return true; if (u.role === 'admin') return true;
+  if (u.role === 'supervisor') { const cs = all('SELECT coordinator_id c FROM batches WHERE supervisor_id=?', u.id).map(x => x.c); return cs.includes(a) || cs.includes(b); }
+  return false;
+}
+route('GET', '/api/chats', async ({ u, q }) => {
+  const contacts = ACT_.chatContacts(u);
+  const last = all('SELECT * FROM messages WHERE from_id=? OR to_id=? ORDER BY id DESC LIMIT 500', u.id, u.id), byPeer = {};
+  for (const m of last) { const peer = m.from_id === u.id ? m.to_id : m.from_id; const x = (byPeer[peer] ||= { last: m, unread: 0 }); if (m.to_id === u.id && !m.read_at) x.unread++; }
+  const list = contacts.map(c => ({ ...c, last: byPeer[c.id] ? { body: byPeer[c.id].last.body || '[ملف]', at: byPeer[c.id].last.created_at, mine: byPeer[c.id].last.from_id === u.id } : null, unread: byPeer[c.id] ? byPeer[c.id].unread : 0 }))
+    .sort((a, b) => (b.last ? b.last.at : 0) - (a.last ? a.last.at : 0));
+  let others = [];
+  if ((u.role === 'admin' || u.role === 'supervisor') && q.all) {
+    const nm = Object.fromEntries(all('SELECT id, name, role FROM users').map(x => [x.id, x]));
+    const pairs = all('SELECT MIN(from_id,to_id) a, MAX(from_id,to_id) b, MAX(created_at) at, COUNT(*) n FROM messages WHERE from_id!=? AND to_id!=? GROUP BY a, b ORDER BY at DESC LIMIT 200', u.id, u.id);
+    others = pairs.filter(x => canSeePair(u, x.a, x.b)).map(x => ({ ...x, a_name: (nm[x.a] || {}).name, b_name: (nm[x.b] || {}).name, a_role: (nm[x.a] || {}).role, b_role: (nm[x.b] || {}).role }));
+  }
+  return { contacts: list, others };
+});
+route('GET', '/api/chats/:a/:b', async ({ u, p }) => {
+  const a = int(p.a), b = int(p.b); if (!canSeePair(u, a, b)) fail(403, 'مش مسموح');
+  if (u.id === a || u.id === b) run('UPDATE messages SET read_at=? WHERE to_id=? AND from_id=? AND read_at IS NULL', Date.now(), u.id, u.id === a ? b : a);
+  return all(`SELECT id, from_id, to_id, body, file_kind, mime, name, created_at, read_at, (file_id IS NOT NULL OR path IS NOT NULL) has_file FROM messages WHERE ${pairWhere} ORDER BY id LIMIT 1000`, a, b, b, a);
+});
+route('POST', '/api/chats/:id', async ({ u, p, body, files }) => {
+  const to = one('SELECT * FROM users WHERE id=? AND active=1', int(p.id)) || fail(404, 'مش موجود'); let file = null;
+  if (files.file) { const fp = path.join(ATT, `m${Date.now()}-${files.file.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(fp, files.file.buf); file = { path: fp, mime: files.file.mime, name: files.file.name }; }
+  return ACT_.sendChat(u, to, { body: body.body, file });
+});
+route('GET', '/api/messages/:id/file', async ({ u, p, res }) => {
+  const m = one('SELECT * FROM messages WHERE id=?', int(p.id)) || fail(404, 'مش موجود'); if (!canSeePair(u, m.from_id, m.to_id)) fail(403, 'مش مسموح');
+  if (m.path && fs.existsSync(m.path)) { res.writeHead(200, { 'content-type': m.mime || 'application/octet-stream', 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' }); return res.end(fs.readFileSync(m.path)); }
+  if (!m.file_id) fail(404, 'مفيش ملف');
+  const url = await bot.getFileUrl(m.file_id); if (!url) fail(404, 'الملف مش متاح');
+  const r = await fetch(url); res.writeHead(200, { 'content-type': { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4' }[m.file_kind] || r.headers.get('content-type') || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); res.end(Buffer.from(await r.arrayBuffer()));
+});
 route('GET', '/api/my-questions', async ({ u }) => {
   need(u, 'doctor');
   return all("SELECT t.id, t.kind, t.body, t.priority, t.due_at, t.sent_doctor_at, t.reply, t.reply_at, t.reply_kind, t.att_kind, t.att_mime, t.closed_at, (t.att_path IS NOT NULL OR t.att_file_id IS NOT NULL) has_att, (t.reply_path IS NOT NULL OR t.reply_file_id IS NOT NULL) has_reply_file, l.name lecture FROM tickets t LEFT JOIN lectures l ON l.id=t.lecture_id WHERE t.doctor_id=? AND t.sent_doctor_at IS NOT NULL ORDER BY t.reply_at IS NOT NULL, t.priority DESC, t.sent_doctor_at DESC LIMIT 200", u.id)
@@ -382,7 +418,7 @@ route('POST', '/api/my-questions/:id/reply', async ({ u, p, body, files }) => {
   req1(text, 'الرد أو الريكورد'); let fp = null;
   if (f) { fp = path.join(ATT, `r${t.id}-${f.name.replace(/[^\w.\-]+/g, '_').slice(-60)}`); fs.writeFileSync(fp, f.buf); }
   run('UPDATE tickets SET reply=?, reply_at=?, reply_path=?, reply_mime=?, reply_name=? WHERE id=?', text, Date.now(), fp, f ? f.mime || 'application/octet-stream' : null, f ? f.name : null, t.id);
-  await bot.notifyCoordReply(one('SELECT * FROM tickets WHERE id=?', t.id)); return { ok: true };
+  await bot.afterDoctorReply(one('SELECT * FROM tickets WHERE id=?', t.id)); return { ok: true };
 });
 route('GET', '/api/tickets/:id/attachment', async ({ u, p, res }) => {
   const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة');
@@ -684,7 +720,7 @@ route('GET', '/api/audit', async ({ u, q }) => {
   return { rows: out, more: rows.length === 150 ? rows.at(-1).id : null, users: all('SELECT id, name, role FROM users ORDER BY role, name') };
 });
 route('GET', '/api/settings', async ({ u }) => { need(u, 'admin'); return Object.fromEntries(all("SELECT key,value FROM settings WHERE key NOT LIKE 'last_%'").map(r => [r.key, r.value])); });
-const ALERT_KEYS = ['remind_before_hours', 'upload_alert_minutes', 'send_alert_minutes', 'return_alert_minutes', 'deliver_alert_minutes', 'due_alert_minutes', 'sup_grace_minutes'];
+const ALERT_KEYS = ['doctor_reply_alert_hours', 'remind_before_hours', 'upload_alert_minutes', 'send_alert_minutes', 'return_alert_minutes', 'deliver_alert_minutes', 'due_alert_minutes', 'sup_grace_minutes'];
 route('PUT', '/api/settings', async ({ u, body }) => {
   need(u, 'admin');
   for (const k of ALERT_KEYS) if (k in body) { const v = String(body[k]).trim(); if (v && !/^[\d.]+([,،\s]+[\d.]+)*$/.test(v)) fail(400, 'التنبيهات: اكتب أرقام بينها فاصلة، زي 6, 3, 1'); if (k === 'sup_grace_minutes' && !(Number(v) > 0)) fail(400, 'مهلة المشرف لازم رقم'); }
@@ -757,7 +793,10 @@ const server = http.createServer(async (req, res) => {
 
 if (require.main === module) {
   if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) { console.error('SESSION_SECRET لازم يكون 32 حرف على الأقل في ملف .env'); process.exit(1); }
-  server.listen(PORT, () => console.log(`VitalMedX on :${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`VitalMedX on :${PORT}`);
+    if (bot.enabled()) bot.call('setMyCommands', { commands: [{ command: 'menu', description: 'كل اللي تقدر تعمله' }, { command: 'new', description: 'محاضرة جديدة (للمسؤول والمشرف)' }, { command: 'msg', description: 'ابعت رسالة' }, { command: 'tasks', description: 'المحاضرات المفتوحة (للدكتور)' }, { command: 'cancel', description: 'إلغاء' }] }).catch(() => {});
+  });
   if (process.env.NO_JOBS !== '1') jobs.start();
 }
 module.exports = { server };

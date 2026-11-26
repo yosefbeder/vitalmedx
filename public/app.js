@@ -31,11 +31,11 @@ new MutationObserver(() => { for (const c of document.querySelectorAll('.stack t
 let ME = null, view = 'home', cache = {};
 const ROLE = { admin: 'أدمن', supervisor: 'مشرف', coordinator: 'مسؤول دفعة', cs: 'خدمة عملاء', doctor: 'دكتور' };
 const NAV = {
-  admin: [['home', 'لوحة التحكم'], ['unis', 'الجامعات'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'الفريق'], ['ranking', 'الترتيب'], ['reports', 'التقارير'], ['penalties', 'العقوبات'], ['finance', 'الحسابات'], ['subs', 'الاشتراكات'], ['audit', 'سجل العمليات'], ['settings', 'الإعدادات'], ['account', 'حسابي']],
-  supervisor: [['home', 'لوحة التحكم'], ['unis', 'دفعاتي'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'التيم'], ['reports', 'التقرير اليومي'], ['penalties', 'العقوبات'], ['account', 'حسابي']],
-  coordinator: [['home', 'لوحة التحكم'], ['checklist', 'مهام اليوم'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['unis', 'دفعاتي'], ['doctors', 'الدكاترة'], ['penalties', 'العقوبات'], ['account', 'حسابي']],
-  cs: [['tickets', 'التذاكر'], ['subs', 'الاشتراكات'], ['shift', 'الشيفت'], ['account', 'حسابي']],
-  doctor: [['home', 'مهامي'], ['myq', 'الأسئلة'], ['penalties', 'القرارات'], ['account', 'حسابي']],
+  admin: [['home', 'لوحة التحكم'], ['unis', 'الجامعات'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'الفريق'], ['ranking', 'الترتيب'], ['reports', 'التقارير'], ['penalties', 'العقوبات'], ['finance', 'الحسابات'], ['subs', 'الاشتراكات'], ['audit', 'سجل العمليات'], ['settings', 'الإعدادات'], ['chats', 'المحادثات'], ['account', 'حسابي']],
+  supervisor: [['home', 'لوحة التحكم'], ['unis', 'دفعاتي'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['doctors', 'الدكاترة'], ['team', 'التيم'], ['reports', 'التقرير اليومي'], ['penalties', 'العقوبات'], ['chats', 'المحادثات'], ['account', 'حسابي']],
+  coordinator: [['home', 'لوحة التحكم'], ['checklist', 'مهام اليوم'], ['lectures', 'المحاضرات'], ['tickets', 'الأسئلة والمشاكل'], ['unis', 'دفعاتي'], ['doctors', 'الدكاترة'], ['penalties', 'العقوبات'], ['chats', 'المحادثات'], ['account', 'حسابي']],
+  cs: [['tickets', 'التذاكر'], ['subs', 'الاشتراكات'], ['chats', 'المحادثات'], ['account', 'حسابي']],
+  doctor: [['home', 'مهامي'], ['myq', 'الأسئلة'], ['penalties', 'القرارات'], ['chats', 'المحادثات'], ['account', 'حسابي']],
 };
 const TY = () => ME.types;
 const PRI = { 0: ['غير مهم', 'pd'], 1: ['عادي', 'rv'], 2: ['مهم', 'warn'], 3: ['مهم جداً', 'bad'] };
@@ -77,7 +77,7 @@ async function boot() {
   const h = location.hash.slice(1); view = NAV[ME.role].some(n => n[0] === h) ? h : NAV[ME.role][0][0];
   let ib = document.getElementById('impbar'); if (ib) ib.remove();
   if (ME.impersonated_by) { ib = document.createElement('div'); ib.id = 'impbar'; ib.style.cssText = 'z-index:20;background:#9a6408;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap'; ib.innerHTML = `<span>إنت داخل على حساب <b>${esc(ME.name)}</b> (${ROLE[ME.role]}) بصلاحياته. أي حاجة تعملها هتتسجل باسمه.</span><button class="btn sm" style="background:#fff;color:#000;border-color:#fff" id="impstop">رجوع لحسابي</button>`; document.querySelector('.content').prepend(ib); $('#impstop').onclick = async () => { await api('POST', '/api/impersonate-stop'); location.hash = 'settings'; await boot(); }; }
-  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.7.1</small>`;
+  $('#mebox').innerHTML = `<b>${esc(ME.name)}</b><small>${ROLE[ME.role]} · إصدار 1.8.0</small>`;
   render();
 }
 addEventListener('hashchange', () => { if (!ME) return; const h = location.hash.slice(1); if (NAV[ME.role].some(n => n[0] === h)) { view = h; render(); } });
@@ -166,10 +166,34 @@ V.unis = async () => {
 };
 function bindExam() {
   document.querySelectorAll('[data-exam]').forEach(b => (b.onclick = () => {
-    const bt = cache.batches.find(x => x.id === Number(b.dataset.exam));
-    modal(`<b>امتحان ${esc(bt.code)}</b>`, `<form id="ef"><label>تاريخ أقرب امتحان<input type="date" name="exam_date" value="${esc(bt.exam_date || '')}"></label><label>ملاحظة<input name="exam_note" value="${esc(bt.exam_note || '')}"></label><button class="btn">حفظ</button></form>`);
-    $('#ef').onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target); await api('PATCH', '/api/batches/' + bt.id, { exam_date: f.get('exam_date'), exam_note: f.get('exam_note') }); dlg.close(); toast('اتحفظ'); render(); };
+    const bt = cache.batches.find(x => x.id === Number(b.dataset.exam)), ex = bt.exams || [];
+    modal(`<b>امتحانات ${esc(bt.code)}</b>`, `${ex.length ? `<table class="stack"><thead><tr><th>التاريخ</th><th>الامتحان</th><th></th></tr></thead><tbody>${ex.map((e, i) => `<tr><td dir="ltr">${esc(e.date)}${i === 0 ? ' <span class="p pd">الأقرب</span>' : ''}</td><td>${esc(e.name || '—')}</td><td><button class="btn g sm" data-exdel="${e.id}">مسح</button></td></tr>`).join('')}</tbody></table>` : '<p class="mut">مفيش امتحانات جاية متسجلة.</p>'}
+    <form id="ef" class="panel" style="margin-top:10px"><h3>إضافة امتحان</h3><div class="two"><label>التاريخ<input type="date" name="date" required></label><label>اسم الامتحان أو المادة<input name="name" placeholder="مثلاً: باطنة ميدتيرم"></label></div><button class="btn a">إضافة</button></form>
+    <p class="mut">تنبيه المراجعات بيشتغل على أقرب امتحان، والامتحان اللي فات بيختفي لوحده.</p>`);
+    $('#ef').onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target); await api('POST', `/api/batches/${bt.id}/exams`, { date: f.get('date'), name: f.get('name') }); dlg.close(); toast('الامتحان اتسجل ✓'); render(); };
+    document.querySelectorAll('[data-exdel]').forEach(x => (x.onclick = async () => { await api('DELETE', '/api/exams/' + x.dataset.exdel); dlg.close(); toast('اتمسح'); render(); }));
   }));
+}
+
+/* ----- chats ----- */
+V.chats = async () => {
+  const boss = ['admin', 'supervisor'].includes(ME.role), r = await api('GET', '/api/chats' + (boss ? '?all=1' : ''));
+  const row = c => `<button class="card" data-chat="${c.id}" style="text-align:right;width:100%;margin-bottom:8px"><div class="row sp"><b>${esc(c.name)}</b>${c.unread ? `<span class="p bad">${c.unread} جديدة</span>` : ''}</div><div class="mut">${ROLE[c.role]}${c.linked ? '' : ' · مش رابط البوت'}</div>${c.last ? `<div class="mut" style="margin-top:4px">${c.last.mine ? 'انت: ' : ''}${esc(c.last.body.slice(0, 70))} · ${fmt(c.last.at)}</div>` : ''}</button>`;
+  $('#main').innerHTML = `<h2>المحادثات</h2><p class="note">ابعت رسالة لأي حد من هنا أو من البوت (/msg). الرسالة بتوصله على البوت، ولما يعمل Reply عليها ردّه بيرجعلك هنا وعلى البوت.</p>
+  <div class="panel" style="padding:8px">${r.contacts.length ? r.contacts.map(row).join('') : empty('مفيش حد تقدر تكلمه')}</div>
+  ${boss && r.others.length ? `<h3>محادثات الفريق</h3><div class="panel" style="padding:6px 10px"><table class="stack"><thead><tr><th>بين</th><th>آخر رسالة</th><th class="n">عدد</th></tr></thead><tbody>${r.others.map(o => `<tr class="click" data-pair="${o.a}:${o.b}"><td>${esc(o.a_name)} (${ROLE[o.a_role] || ''}) ↔ ${esc(o.b_name)} (${ROLE[o.b_role] || ''})</td><td>${fmt(o.at)}</td><td class="n">${o.n}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+  document.querySelectorAll('[data-chat]').forEach(b => (b.onclick = () => openChat(ME.id, Number(b.dataset.chat), r.contacts.find(c => c.id === Number(b.dataset.chat)))));
+  document.querySelectorAll('[data-pair]').forEach(b => (b.onclick = () => { const [a, c] = b.dataset.pair.split(':').map(Number); const o = r.others.find(x => x.a === a && x.b === c); openChat(a, c, null, o); }));
+};
+async function openChat(a, b, peer, pairInfo) {
+  const ms = await api('GET', `/api/chats/${a}/${b}`), mine = a === ME.id;
+  const title = mine ? `${esc(peer.name)} · ${ROLE[peer.role]}` : `${esc(pairInfo.a_name)} ↔ ${esc(pairInfo.b_name)}`;
+  const bubble = m => { const me = m.from_id === a; return `<div style="display:flex;justify-content:${me ? 'flex-start' : 'flex-end'};margin:6px 0"><div style="max-width:80%;padding:8px 10px;border-radius:12px;background:${me ? 'var(--accent-soft, #e3f3f1)' : 'var(--panel-2, #f1f0ec)'}"><div style="white-space:pre-wrap">${esc(m.body || '')}</div>${m.has_file ? media(`/api/messages/${m.id}/file`, m.mime || ({ voice: 'audio/ogg', photo: 'image/jpeg', video: 'video/mp4' }[m.file_kind] || ''), m.name) : ''}<div class="mut" style="font-size:11px;margin-top:2px">${mine ? (me ? 'انت' : esc(peer.name)) : (m.from_id === pairInfo.a ? esc(pairInfo.a_name) : esc(pairInfo.b_name))} · ${fmt(m.created_at)}</div></div></div>`; };
+  modal(`<b>${title}</b>`, `<div id="cbox" style="max-height:55vh;overflow:auto">${ms.length ? ms.map(bubble).join('') : '<p class="mut">مفيش رسايل لسه.</p>'}</div>
+    ${mine ? `<form id="cf2" style="margin-top:10px"><textarea name="body" placeholder="اكتب رسالتك" rows="2"></textarea><div class="row sp"><input type="file" name="file" style="max-width:60%"><button class="btn a">إرسال</button></div>${peer.linked ? '' : '<p class="mut">مش رابط البوت: هيشوف الرسالة في اللوحة بس.</p>'}</form>` : '<p class="mut">انت بتتابع المحادثة دي بس.</p>'}`);
+  const box = $('#cbox'); box.scrollTop = box.scrollHeight;
+  if (mine) $('#cf2').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target); if (!String(fd.get('body')).trim() && !(fd.get('file') && fd.get('file').size)) return toast('اكتب الرسالة'); if (!(fd.get('file') && fd.get('file').size)) fd.delete('file');
+    const btn = e.target.querySelector('.btn.a'); btn.disabled = true; try { const r = await api('POST', '/api/chats/' + b, fd); toast(r.delivered ? 'اتبعتت ✓' : 'اتسجلت (مش رابط البوت)'); openChat(a, b, peer); } catch { btn.disabled = false; } };
 }
 
 /* ----- lectures ----- */
@@ -193,8 +217,9 @@ function lecTable(ls) {
 }
 function sendLectureForm() {
   const bs = cache.batches, ds = cache.doctors;
-  modal('<b>إرسال محاضرة جديدة</b>', `<form id="sf"><div class="two"><label>الدفعة<select name="batch_id" required>${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni + ' ' + b.year]), '', 'اختار الدفعة')}</select></label><label>الدكتور<select name="doctor_id" id="sd" required>${opts(ds.map(d => [d.id, d.name + (d.linked ? '' : ' (مش مربوط بالبوت)')]), '', 'اختار الدكتور')}</select></label></div>
+  modal('<b>إرسال محاضرة جديدة</b>', `<form id="sf"><div class="two"><label>الدفعة<select name="batch_id" id="sb" required>${opts(bs.map(b => [b.id, b.code + ' · ' + b.uni + ' ' + b.year]), '', 'اختار الدفعة')}</select></label><label>الدكتور<select name="doctor_id" id="sd" required>${opts(ds.map(d => [d.id, d.name + (d.linked ? '' : ' (مش مربوط بالبوت)')]), '', 'اختار الدكتور')}</select></label></div>
   <p class="mut" id="cap"></p><label>الأولوية (مش بتظهر للدكتور)<select name="priority">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), '1')}</select></label><div class="two"><label>نوع الشرح<select name="kind" id="sk">${opts(Object.entries(ME.kinds || { new: 'محاضرة جديدة', continue: 'استكمال شرح', repeat: 'معادة' }), 'new')}</select></label><label>النوع<select name="type" id="st">${opts(Object.entries(TY()), 'theory')}</select></label></div><label>السعر<input name="price" id="sp" type="number" step="0.01" min="0" required></label><p class="mut" id="sph"></p>
+  <div id="scov" hidden class="panel" style="padding:8px 12px"><b>المراجعة على أنهي محاضرات؟</b><div id="scl" class="mut">اختار الدفعة الأول</div></div>
   <label>اسم المحاضرة<input name="name" required dir="auto" placeholder="Anatomy – Lec 12: Thorax"></label>
   <div class="two"><label>ملف المحاضرة PDF<input type="file" name="lec" accept="application/pdf,.pdf"></label><label>مرجع الأسئلة (اختياري)<input type="file" name="qsrc"></label></div>
   <label class="chk"><input type="checkbox" name="no_q" value="1"> إعفاء ملف الأسئلة (المحاضرة دي مالهاش ملف أسئلة)</label><p class="mut">الدكتور هيشوف اسم المحاضرة ونوعها وسعرها والملفات بس، من غير اسم الجامعة أو الكود.</p><button class="btn a wide">إرسال للدكتور عبر البوت</button></form>`);
@@ -205,10 +230,15 @@ function sendLectureForm() {
     if (!d) { $('#cap').textContent = ''; return; }
     const s = d.stats; $('#cap').innerHTML = `اتبعتله النهارده ${s.sentToday} من طاقته ${s.capacity}${s.sentToday >= s.capacity ? ' · <span class="red">وصل لطاقته</span>' : ''} · متأخر الآن ${s.lateNow}`;
   };
+  const covers = async () => { const rv = $('#st').value === 'revision'; $('#scov').hidden = !rv; if (!rv || !$('#sb').value) return;
+    const ls = (await api('GET', '/api/lectures?limit=200&batch=' + $('#sb').value)).filter(l => l.type !== 'revision');
+    $('#scl').innerHTML = ls.length ? ls.map(l => `<label class="chk" style="margin:4px 0"><input type="checkbox" data-cov="${l.id}"> ${esc(l.name)} <span class="mut">· ${esc(l.doctor)}</span></label>`).join('') : 'مفيش محاضرات في الدفعة دي لسه'; };
+  $('#sb').onchange = covers; $('#st').addEventListener('change', covers);
   $('#sd').onchange = upd; $('#st').onchange = upd; $('#sk').onchange = () => { $('#sp').dataset.manual = ''; upd(); }; $('#sp').oninput = () => { $('#sp').dataset.manual = $('#sk').value === 'repeat' ? '1' : ''; };
   $('#sf').onsubmit = async e => {
     e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
-    try { const r = await api('POST', '/api/lectures', new FormData(e.target)); dlg.close(); toast(`اتبعتت · #${r.id}${r.delivered_to_bot ? '' : ' (الدكتور مش مربوط بالبوت، الملفات مااتبعتتش)'}${r.over_capacity ? ' · فوق طاقته' : ''}`); render(); } catch { btn.disabled = false; }
+    const fd = new FormData(e.target); if ($('#st').value === 'revision') fd.set('covers', [...document.querySelectorAll('[data-cov]:checked')].map(x => x.dataset.cov).join(','));
+    try { const r = await api('POST', '/api/lectures', fd); dlg.close(); toast(`اتبعتت · #${r.id}${r.delivered_to_bot ? '' : ' (الدكتور مش مربوط بالبوت، الملفات مااتبعتتش)'}${r.over_capacity ? ' · فوق طاقته' : ''}`); render(); } catch { btn.disabled = false; }
   };
 }
 async function openLecture(id) {
@@ -216,7 +246,7 @@ async function openLecture(id) {
   const both = l.video_at && l.q_at, approved = l.video_ok_at && l.q_ok_at;
   const log = [[l.sent_at, 'اتبعتت للدكتور عبر البوت'], l.video_at && [l.video_at, 'الفيديو اتسلم' + (l.v_late ? ' (متأخر)' : '')], l.video_ok_at && [l.video_ok_at, 'الفيديو اتعتمد' + (l.ok_by_name ? ` (بواسطة ${l.ok_by_name})` : '')], l.q_at && [l.q_at, 'ملف الأسئلة اتسلم' + (l.q_late ? ' (متأخر)' : '')], l.q_ok_at && [l.q_ok_at, 'ملف الأسئلة اتعتمد' + (l.ok_by_name ? ` (بواسطة ${l.ok_by_name})` : '')], l.uploaded_at && [l.uploaded_at, 'اترفعت على Nerdio والقناة' + (l.uploaded_by_name ? ` (بواسطة ${l.uploaded_by_name})` : '') + (l.upload_late ? ` · متأخر على المسؤول ${l.coordinator || ''}${l.upload_both_late ? ' والمشرف' : ''}` : '')], ...(l.price_log || []).map(p => [p.at, `السعر اتغير من ${money(p.old)} لـ ${money(p.new)} (${p.by_name})`])].filter(Boolean).sort((a, b) => a[0] - b[0]);
   const ni = (n, lab, m) => `<label>${lab} (من ${m})<input type="number" name="${n}" min="0" max="${m}" value="${l[n] ?? ''}" ${approved ? '' : 'disabled'}></label>`;
-  modal(`<b>#${l.id}</b> ${pill(...LS[l.state])}<div>${esc(l.name)}</div>`, `<p class="mut">${l.batch_code ? `<span dir="ltr">${esc(l.batch_code)}</span> · ${esc(l.university)} ${esc(l.batch_year)} · ` : ''}${esc(l.doctor)} · ${esc(l.type_label || TY()[l.type])} · السعر ${money(l.price)}${l.coordinator ? ' · ' + esc(l.coordinator) : ''}</p>
+  modal(`<b>#${l.id}</b> ${pill(...LS[l.state])}<div>${esc(l.name)}</div>`, `<p class="mut">${l.batch_code ? `<span dir="ltr">${esc(l.batch_code)}</span> · ${esc(l.university)} ${esc(l.batch_year)} · ` : ''}${esc(l.doctor)} · ${esc(l.type_label || TY()[l.type])}${l.covers_names && l.covers_names.length ? ` · على: ${esc(l.covers_names.join('، '))}` : ''} · السعر ${money(l.price)}${l.coordinator ? ' · ' + esc(l.coordinator) : ''}</p>
   <div class="two"><div class="panel"><h3>الفيديو</h3>${fcell(l, 'v')}</div><div class="panel"><h3>ملف الأسئلة</h3>${fcell(l, 'q')}</div></div>
   ${canPri ? `<div class="panel"><div class="two"><label>الأولوية (مش بتظهر للدكتور)<select id="lpri">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), l.priority)}</select></label>${boss ? `<div>${l.excused ? `<p class="amber"><b>مستثناة من التأخير</b>${l.excuse_note ? '<br>' + esc(l.excuse_note) : ''}</p><button class="btn g sm" id="unex">إلغاء الاستثناء</button>` : `<p class="mut">لو قدّمت عليها محاضرات تانية فوق طاقة الدكتور، استثنيها من التأخير.</p><button class="btn g sm" id="exl">استثناء من التأخير</button>`}</div>` : ''}</div></div>` : ''}
   <h3>سجل العمليات</h3><ul class="log">${log.map(([t, x]) => `<li><span class="mut">${fmt(t)}</span><br>${esc(x)}</li>`).join('')}</ul>
@@ -257,10 +287,10 @@ V.tickets = async () => {
 };
 function newTicket() {
   modal('<b>تذكرة جديدة</b>', `<form id="tf"><div class="two"><label>النوع<select name="kind">${opts([['question', 'سؤال طالب'], ['problem', 'مشكلة']], 'question')}</select></label><label>الدفعة<select name="batch_id" id="tb" required>${opts(cache.batches.map(b => [b.id, b.code + ' · ' + b.uni]), '', 'اختار الدفعة')}</select></label></div>
-  <label>المحاضرة (للأسئلة)<select name="lecture_id" id="tl"><option value="">—</option></select></label><label id="tgd" hidden>الدكتور (السؤال هيروحله على طول)<select name="doctor_id" id="tdoc"><option value="">اختار الدكتور</option></select></label><label>الطالب (اسم أو رقم)<input name="student"></label>
+  <label>المحاضرة (للأسئلة)<select name="lecture_id" id="tl"><option value="">—</option></select></label><label id="tto" hidden>يروح لمين؟<select name="to">${opts([['doctor', 'دكتور المحاضرة على طول'], ['coord', 'مسؤول الدفعة (يرد بنفسه أو يبعته)']], 'doctor')}</select></label><label id="tgd" hidden>الدكتور (السؤال هيروحله على طول)<select name="doctor_id" id="tdoc"><option value="">اختار الدكتور</option></select></label><label>الطالب (اسم أو رقم)<input name="student"></label>
   <div class="two"><label>الأولوية<select name="priority">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), '1')}</select></label><label>عايز الرد خلال<select name="due_hours" id="tdue">${opts([['', 'من غير مهلة'], ['1', 'ساعة'], ['3', '3 ساعات'], ['6', '6 ساعات'], ['12', '12 ساعة'], ['24', '24 ساعة'], ['48', '48 ساعة'], ['c', 'مهلة تانية…']], '')}</select></label></div><label id="tduec" hidden>المهلة بالساعات<input type="number" min="0.25" step="0.25" id="tduen"></label><label>النص (لو السؤال ريكورد بس سيبه فاضي)<textarea name="body"></textarea></label><label>ريكورد أو صورة أو ملف السؤال (اختياري)<input type="file" name="att" accept="audio/*,image/*,video/*,.pdf,.ogg,.opus,.m4a,.mp3"></label><button class="btn a">فتح التذكرة</button></form>`);
   $('#tb').onchange = async () => { const ls = await api('GET', '/api/lectures?limit=200&batch=' + $('#tb').value); $('#tl').innerHTML = '<option value="">—</option><option value="doc">👨‍⚕️ سؤال لدكتور (من غير محاضرة)</option>' + ls.map(l => `<option value="${l.id}">#${l.id} ${esc(l.name)} · ${esc(l.doctor)}</option>`).join(''); };
-  $('#tl').onchange = async () => { const g = $('#tl').value === 'doc'; $('#tgd').hidden = !g; if (g && $('#tdoc').options.length < 2) { const ds = cache.doctors || (cache.doctors = await api('GET', '/api/doctors')); $('#tdoc').innerHTML += ds.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join(''); } };
+  $('#tl').onchange = async () => { const g = $('#tl').value === 'doc'; $('#tgd').hidden = !g; $('#tto').hidden = !$('#tl').value || g || $('#tf').kind.value !== 'question'; if (g && $('#tdoc').options.length < 2) { const ds = cache.doctors || (cache.doctors = await api('GET', '/api/doctors')); $('#tdoc').innerHTML += ds.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join(''); } };
   $('#tdue').onchange = () => { $('#tduec').hidden = $('#tdue').value !== 'c'; };
   $('#tf').onsubmit = async e => { e.preventDefault(); const fd = new FormData(e.target);
     if (fd.get('lecture_id') === 'doc') { if (!fd.get('doctor_id')) return toast('اختار الدكتور'); fd.set('lecture_id', ''); } else fd.delete('doctor_id');
@@ -274,6 +304,7 @@ async function openTicket(id) {
   let act = '';
   if ((coord || cs) && !t.closed_at) act += `<div class="panel"><div class="two"><label>الأولوية<select id="tpri">${opts(Object.entries(PRI).map(([k, v]) => [k, v[0]]).reverse(), t.priority)}</select></label><label>المهلة${t.due_at ? ` (دلوقتي ${fmt(t.due_at)})` : ''}<select id="tdu2">${opts([['', '— زي ما هي —'], ['0', 'شيل المهلة'], ['1', 'ساعة من دلوقتي'], ['3', '3 ساعات'], ['6', '6 ساعات'], ['12', '12 ساعة'], ['24', '24 ساعة']], '')}</select></label></div></div>`;
   if (ME.role === 'supervisor' && !t.closed_at && ['new', 'return', 'problem'].includes(t.stage)) act += `<p class="amber">انت المشرف: لو المسؤول اتأخر تقدر تعمل الخطوة دي بنفسك. هتتسجل باسمك، والتأخير هيفضل على المسؤول.</p>`;
+  if (t.stage === 'new' && coord) act += `<form id="tsr" class="panel"><h3>✍️ هرد أنا</h3><p class="mut">لو عارف الإجابة اكتبها هنا، وهتروح لخدمة العملاء على طول.</p><textarea name="reply" required></textarea><button class="btn a sm">إرسال الرد لخدمة العملاء</button></form>`;
   if (t.stage === 'new' && coord) { const ds = cache.doctors || (cache.doctors = await api('GET', '/api/doctors')); act += `<form id="ta" class="panel"><h3>ابعت السؤال للدكتور</h3><label>الدكتور<select name="doctor_id" required>${opts(ds.map(d => [d.id, d.name]), t.doctor_id, 'اختار')}</select></label><button class="btn a">إرسال عبر البوت</button></form>`; }
   if (t.stage === 'doctor' && coord) act += `<form id="tr" class="panel"><h3>الدكتور لسه مارد</h3><p class="mut">لو رد عليك برة البوت اكتب الرد هنا.</p><textarea name="reply" required></textarea><button class="btn sm">تسجيل الرد</button></form>`;
   if (t.stage === 'return' && coord) act += `<div class="panel"><h3>رجّع الرد لخدمة العملاء</h3><button class="btn a" id="tret">تم، الرد رجع لخدمة العملاء</button></div>`;
@@ -287,6 +318,7 @@ async function openTicket(id) {
   if ($('#tr')) $('#tr').onsubmit = e => { e.preventDefault(); go({ action: 'set_reply', reply: new FormData(e.target).get('reply') }, 'الرد اتسجل'); };
   if ($('#tret')) $('#tret').onclick = () => go({ action: 'return' }, 'رجع لخدمة العملاء');
   if ($('#tdel')) $('#tdel').onclick = () => go({ action: 'deliver' }, 'التذكرة اتقفلت');
+  if ($('#tsr')) $('#tsr').onsubmit = e => { e.preventDefault(); go({ action: 'self_reply', reply: new FormData(e.target).get('reply') }, 'ردك راح لخدمة العملاء'); };
   if ($('#tpri')) $('#tpri').onchange = async () => { await api('PATCH', '/api/tickets/' + id, { action: 'priority', priority: $('#tpri').value }); toast('الأولوية اتغيرت'); render(); };
   if ($('#tdu2')) $('#tdu2').onchange = async () => { if ($('#tdu2').value === '') return; await api('PATCH', '/api/tickets/' + id, { action: 'due', due_hours: $('#tdu2').value }); toast('المهلة اتغيرت'); dlg.close(); render(); };
   if ($('#tfw')) $('#tfw').onclick = async () => { await api('PATCH', '/api/tickets/' + id, { action: 'forward' }); toast('الرد اتبعتلك على تليجرام'); };
@@ -599,7 +631,7 @@ V.settings = async () => {
     const fl = (k, l, h) => `<label>${l}<input name="${k}" dir="ltr" inputmode="decimal" value="${esc(s[k] === '0' ? '' : s[k] || '')}" placeholder="مقفول"><small class="mut">${h}</small></label>`;
     body = `<form id="gf" class="panel"><div class="two">${f('brand', 'الاسم', 'text')}${f('deadline_hours', 'مهلة الدكتور (ساعات)')}${f('upload_minutes', 'مهلة الرفع (دقايق)')}${f('coord_reply_minutes', 'مهلة مسؤول الدفعة في الرد (دقايق)')}${f('cs_reply_minutes', 'مهلة خدمة العملاء (دقايق)')}${f('exam_alert_days', 'تنبيه الامتحان قبلها بـ (أيام)')}${f('report_time', 'ميعاد التقرير اليومي', 'time')}${f('backup_time', 'ميعاد الباك أب', 'time')}</div>
     <h3 style="margin-top:16px">التنبيهات</h3><p class="mut">اكتب الأوقات اللي عايز التنبيه يتبعت فيها، أرقام بينها فاصلة (زي <span dir="ltr">6, 3, 1</span>). سيبها فاضية عشان توقف التنبيه ده.</p>
-    <div class="two">${fl('remind_before_hours', 'تذكير الدكتور قبل الديدلاين بـ (ساعات)', 'للدكتور. بعد الديدلاين: إنذار مرة كل يوم تأخير للدكتور والمسؤول والمشرف وليك')}${fl('upload_alert_minutes', 'ملفات اتعتمدت ومااترفعتش، بعد (دقايق)', 'للمسؤول، وبعد مهلة الرفع للمشرف كمان')}${fl('send_alert_minutes', 'سؤال مااتبعتش للدكتور، بعد (دقايق)', 'للمسؤول، وبعد مهلته للمشرف كمان')}${fl('return_alert_minutes', 'رد الدكتور مارجعش لخدمة العملاء، بعد (دقايق)', 'للمسؤول، وبعد مهلته للمشرف كمان')}${fl('deliver_alert_minutes', 'الرد ماوصلش للطالب، بعد (دقايق)', 'لخدمة العملاء، وبعد مهلتها ليك')}${fl('due_alert_minutes', 'قبل مهلة السؤال/المشكلة بـ (دقايق)', 'للي السؤال واقف عنده. ولو المهلة عدّت: للكل')}${f('sup_grace_minutes', 'مهلة المشرف بعد تأخير المسؤول (دقايق) — بعدها التأخير على الاتنين')}</div>
+    <div class="two">${fl('remind_before_hours', 'تذكير الدكتور قبل الديدلاين بـ (ساعات)', 'للدكتور. بعد الديدلاين: إنذار مرة كل يوم تأخير للدكتور والمسؤول والمشرف وليك')}${fl('upload_alert_minutes', 'ملفات اتعتمدت ومااترفعتش، بعد (دقايق)', 'للمسؤول، وبعد مهلة الرفع للمشرف كمان')}${fl('send_alert_minutes', 'سؤال مااتبعتش للدكتور، بعد (دقايق)', 'للمسؤول، وبعد مهلته للمشرف كمان')}${fl('return_alert_minutes', 'رد الدكتور مارجعش لخدمة العملاء، بعد (دقايق)', 'للمسؤول، وبعد مهلته للمشرف كمان')}${fl('deliver_alert_minutes', 'الرد ماوصلش للطالب، بعد (دقايق)', 'لخدمة العملاء، وبعد مهلتها ليك')}${fl('doctor_reply_alert_hours', 'الدكتور مارد على سؤال، بعد (ساعات)', 'للدكتور ولمسؤول الدفعة (لو السؤال مالوش مهلة)')}${fl('due_alert_minutes', 'قبل مهلة السؤال/المشكلة بـ (دقايق)', 'للي السؤال واقف عنده. ولو المهلة عدّت: للكل')}${f('sup_grace_minutes', 'مهلة المشرف بعد تأخير المسؤول (دقايق) — بعدها التأخير على الاتنين')}</div>
     <button class="btn a">حفظ</button></form><div class="panel"><h3>الباك أب</h3><p class="mut">بيتعمل تلقائي كل يوم ويتبعت لقناة تليجرام الخاصة.</p><button class="btn g" id="bk">اعمل باك أب دلوقتي</button></div><form id="rst" class="panel" style="border-color:var(--red)"><h3 class="red">مسح كل بيانات التجربة</h3><p>بيمسح كل المحاضرات، والتذاكر، والمهام، والتقارير، والاشتراكات، والعقوبات، والبونص، والتقفيلات، والترتيب. الحسابات والجامعات والدفعات والإعدادات بتفضل زي ما هي، وبيتعمل باك أب قبل المسح.</p><label class="chk"><input type="checkbox" name="doctors"> امسح كمان كل حسابات الدكاترة</label><label>اكتب <b>امسح كل حاجة</b> للتأكيد<input name="confirm" autocomplete="off"></label><button class="btn r">مسح نهائي</button></form>`;
   }
   $('#main').innerHTML = `<h2>الإعدادات</h2><div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-st="${k}" class="${k === ST ? 'on' : ''}">${v}</button>`).join('')}</div>${body}`;

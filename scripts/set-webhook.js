@@ -6,6 +6,6 @@ const api = (m, b) => fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${m}`, { m
 (async () => {
   const url = `${PUBLIC_URL.replace(/\/$/, '')}/tg/${WEBHOOK_SECRET}`;
   console.log(await api('setWebhook', { url, secret_token: WEBHOOK_SECRET, allowed_updates: ['message', 'callback_query'], drop_pending_updates: true }));
-  console.log(await api('setMyCommands', { commands: [{ command: 'tasks', description: 'المحاضرات المفتوحة' }, { command: 'start', description: 'البداية' }] }));
+  console.log(await api('setMyCommands', { commands: [{ command: 'menu', description: 'كل اللي تقدر تعمله' }, { command: 'new', description: 'محاضرة جديدة (للمسؤول والمشرف)' }, { command: 'msg', description: 'ابعت رسالة' }, { command: 'tasks', description: 'المحاضرات المفتوحة (للدكتور)' }, { command: 'cancel', description: 'إلغاء' }] }));
   console.log(await api('getWebhookInfo', {}));
 })();

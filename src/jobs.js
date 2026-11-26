@@ -49,6 +49,11 @@ async function remindersInner() {
     if (t.kind === 'question' && !t.sent_doctor_at) {
       const el = now - t.created_at, m = stepHit(`snd:${t.id}`, el, sendList, M);
       if (m != null) { const late = el > L.sendLim(); await sendMany([tgOf(b.coordinator_id), late && tgOf(b.supervisor_id)], `${late ? '⏰' : '⏳'} ${head} لسه مااتبعتش للدكتور من ${L.fmtDur(el)}.${late ? `\nالمسؤول: ${b.cn || '—'}. المشرف يقدر يبعته بنفسه.` : ''}`); }
+    } else if (t.sent_doctor_at && !t.reply_at && !t.returned_at && !t.due_at) {
+      const el = now - t.sent_doctor_at, m = stepHit(`drp:${t.id}`, el, L.numList('doctor_reply_alert_hours'), L.H);
+      if (m != null) { const dn = (one('SELECT name FROM users WHERE id=?', t.doctor_id) || {}).name || 'الدكتور';
+        await sendMany([tgOf(t.doctor_id)], `⏳ تذكير: ${t.kind === 'problem' ? 'المشكلة' : 'السؤال'} #${t.id}${t.priority >= 2 ? ' 🔴' : ''} مستني ردك من ${L.fmtDur(el)}.`);
+        await sendMany([tgOf(b.coordinator_id)], `⏰ ${dn} مارد على ${head} من ${L.fmtDur(el)}.\nكلّمه من /msg.`); }
     } else if (t.reply_at && !t.returned_at && t.kind === 'question') {
       const el = now - t.reply_at, m = stepHit(`ret:${t.id}`, el, retList, M);
       if (m != null) { const late = el > cLim; await sendMany([tgOf(b.coordinator_id), late && tgOf(b.supervisor_id)], `${late ? '⏰' : '⏳'} الدكتور رد على ${head} من ${L.fmtDur(el)} والرد لسه مارجعش لخدمة العملاء.${late ? `\nالمسؤول: ${b.cn || '—'}. المشرف يقدر يرجّعه بنفسه.` : ''}`); }

@@ -76,7 +76,21 @@ db.exec('CREATE INDEX IF NOT EXISTS audit_at ON audit(at)');
 // v1.7: lecture kind, ticket priority/deadline, who-did-it, alerts log, password reset
 for (const [c, d] of [['kind', "TEXT NOT NULL DEFAULT 'new'"], ['ok_by', 'INTEGER'], ['uploaded_by', 'INTEGER']]) if (addCol('lectures', c, d) && c === 'kind') db.exec("UPDATE lectures SET kind='repeat', type='theory' WHERE type='repeat'");
 for (const [c, d] of [['priority', 'INTEGER NOT NULL DEFAULT 1'], ['due_at', 'INTEGER'], ['sent_by', 'INTEGER'], ['closed_by', 'INTEGER'], ['direct', 'INTEGER NOT NULL DEFAULT 0'], ['reply_path', 'TEXT'], ['reply_mime', 'TEXT'], ['reply_name', 'TEXT']]) addCol('tickets', c, d);
-for (const [c, d] of [['doctor_id', 'INTEGER'], ['student', 'TEXT'], ['priority', 'INTEGER'], ['stage', 'TEXT']]) addCol('bot_drafts', c, d);
+for (const [c, d] of [['doctor_id', 'INTEGER'], ['student', 'TEXT'], ['priority', 'INTEGER'], ['stage', 'TEXT'], ['route', 'TEXT']]) addCol('bot_drafts', c, d);
+// v1.8: revision covers, coordinator self-replies, chats, multi exams, bot flows, single CS
+addCol('lectures', 'covers', 'TEXT');
+for (const [c, d] of [['replied_by', 'INTEGER'], ['cr_msg_id', 'INTEGER']]) addCol('tickets', c, d);
+db.exec('CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, from_id INTEGER NOT NULL, to_id INTEGER NOT NULL, body TEXT, file_id TEXT, file_kind TEXT, path TEXT, mime TEXT, name TEXT, tg_msg_id INTEGER, read_at INTEGER, created_at INTEGER NOT NULL)');
+db.exec('CREATE INDEX IF NOT EXISTS msg_pair ON messages(from_id, to_id, created_at)');
+db.exec('CREATE TABLE IF NOT EXISTS bot_flows(tg_id TEXT PRIMARY KEY, kind TEXT NOT NULL, step TEXT, data TEXT, prompt_id INTEGER, at INTEGER NOT NULL)');
+if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='exams'").get()) {
+  db.exec('CREATE TABLE exams(id INTEGER PRIMARY KEY, batch_id INTEGER NOT NULL, date TEXT NOT NULL, name TEXT, created_by INTEGER, created_at INTEGER NOT NULL)');
+  for (const b of db.prepare('SELECT id, exam_date, exam_note FROM batches WHERE exam_date IS NOT NULL').all()) db.prepare('INSERT INTO exams(batch_id,date,name,created_at) VALUES(?,?,?,?)').run(b.id, b.exam_date, b.exam_note, Date.now());
+}
+if (!db.prepare("SELECT 1 FROM settings WHERE key='single_cs_v18'").get()) { // one customer-service account from now on (history kept)
+  db.prepare("UPDATE users SET active=0 WHERE role='cs' AND email='cs2@vitalmedx.app'").run();
+  db.prepare("INSERT INTO settings(key,value) VALUES('single_cs_v18','1')").run();
+}
 db.exec('CREATE TABLE IF NOT EXISTS reset_codes(user_id INTEGER PRIMARY KEY, code TEXT NOT NULL, exp INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL)');
 if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='alert_log'").get()) {
   db.exec('CREATE TABLE alert_log(key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
@@ -93,7 +107,7 @@ const DEFAULTS = {
   deadline_hours: '24', remind_hours: '6', upload_minutes: '30', coord_reply_minutes: '60', cs_reply_minutes: '30',
   exam_alert_days: '10', report_time: '23:00', backup_time: '03:00', repeat_ratio: '0.5', brand: 'VitalMedX',
   // alerts: comma-separated lists the admin edits from Settings → التنبيهات
-  remind_before_hours: '', upload_alert_minutes: '30,60', send_alert_minutes: '60', return_alert_minutes: '60,120', deliver_alert_minutes: '30,60', due_alert_minutes: '30', sup_grace_minutes: '30',
+  doctor_reply_alert_hours: '3', remind_before_hours: '', upload_alert_minutes: '30,60', send_alert_minutes: '60', return_alert_minutes: '60,120', deliver_alert_minutes: '30,60', due_alert_minutes: '30', sup_grace_minutes: '30',
 };
 for (const [k, v] of Object.entries(DEFAULTS)) db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(k, v);
 if (!(db.prepare("SELECT value FROM settings WHERE key='remind_before_hours'").get() || {}).value) db.prepare("UPDATE settings SET value=? WHERE key='remind_before_hours'").run(String((db.prepare("SELECT value FROM settings WHERE key='remind_hours'").get() || {}).value || '6') + ',1');

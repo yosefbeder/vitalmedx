@@ -18,7 +18,7 @@ tx(() => {
   const C = { walaa: user('ولاء', 'walaa@vitalmedx.app', 'coordinator'), hasnaa: user('حسناء', 'hasnaa@vitalmedx.app', 'coordinator'),
     tantawy: user('أحمد الطنطاوي', 'ahmed.tantawy@vitalmedx.app', 'coordinator'), salah: user('صلاح', 'salah@vitalmedx.app', 'coordinator'),
     mahmoud: user('محمود صالح', 'mahmoud.saleh@vitalmedx.app', 'coordinator') };
-  user('خدمة العملاء 1', 'cs1@vitalmedx.app', 'cs'); user('خدمة العملاء 2', 'cs2@vitalmedx.app', 'cs');
+  user('خدمة العملاء', 'cs1@vitalmedx.app', 'cs');
   const U = {};
   for (const [code, name] of [['1', 'جامعة الملك فيصل'], ['N1', 'تمريض فيصل'], ['2', 'جامعة أم القرى'], ['3', 'جامعة المعرفة'], ['N3', 'تمريض المعرفة'], ['4', 'جامعة المجمعة'], ['5', 'جامعة القنفذة'], ['9', 'جامعة الحرس']])
     U[code] = Number(run('INSERT INTO universities(code,name) VALUES(?,?)', code, name).lastInsertRowid);

@@ -65,7 +65,7 @@ const returnLate = (t, extra = 0) => !!(t.reply_at && (t.returned_at || now()) -
 function ticketHolder(t) {
   if (t.closed_at) return null;
   if (t.kind === 'problem') return t.sent_doctor_at && !t.reply_at ? 'doctor' : 'coordinator';
-  if (!t.sent_doctor_at) return 'coordinator'; if (!t.reply_at) return 'doctor'; if (!t.returned_at) return 'coordinator'; return 'cs';
+  if (t.returned_at) return 'cs'; if (!t.sent_doctor_at) return 'coordinator'; if (!t.reply_at) return 'doctor'; if (!t.returned_at) return 'coordinator'; return 'cs';
 }
 function decorate(l) {
   const b = one('SELECT b.code, b.year, u.name uni FROM batches b JOIN universities u ON u.id=b.university_id WHERE b.id=?', l.batch_id) || {};
@@ -73,9 +73,10 @@ function decorate(l) {
   const qs = l.no_q ? 'na' : fileState(l.q_at, l.q_ok_at, l.sent_at, l.excused);
   return { ...l, batch_code: b.code, batch_year: b.year, university: b.uni, doctor: d.name, coordinator: c.name, state: lectureState(l),
     v_state: fileState(l.video_at, l.video_ok_at, l.sent_at, l.excused), q_state: qs,
-    v_late: isLate(l.video_at, l.sent_at, l.excused), q_late: isLate(l.q_at, l.sent_at, l.excused), upload_late: uploadLate(l), upload_both_late: uploadLate(l, supGrace()), deadline_at: l.sent_at + deadline(), type_label: typeLabel(l),
+    v_late: isLate(l.video_at, l.sent_at, l.excused), q_late: isLate(l.q_at, l.sent_at, l.excused), upload_late: uploadLate(l), upload_both_late: uploadLate(l, supGrace()), deadline_at: l.sent_at + deadline(), type_label: typeLabel(l), covers_names: coversOf(l),
     ok_by_name: l.ok_by && l.ok_by !== l.coordinator_id ? nameRole(l.ok_by) : null, uploaded_by_name: l.uploaded_by && l.uploaded_by !== l.coordinator_id ? nameRole(l.uploaded_by) : null };
 }
+const coversOf = l => { try { const ids = JSON.parse(l.covers || '[]').map(Number).filter(Boolean); return ids.length ? all(`SELECT name FROM lectures WHERE id IN (${ids.join(',')}) ORDER BY sent_at`).map(x => x.name) : []; } catch { return []; } };
 const nameRole = id => { const x = one('SELECT name, role FROM users WHERE id=?', id); return x ? `${x.name}${x.role === 'supervisor' ? ' (المشرف)' : x.role === 'admin' ? ' (الأدمن)' : ''}` : null; };
 
 /* ---------- doctors ---------- */
@@ -198,6 +199,8 @@ function batchRows(u) {
   return all(`SELECT b.*, un.name uni, un.code ucode, s.name supervisor, c.name coordinator FROM batches b JOIN universities un ON un.id=b.university_id
     LEFT JOIN users s ON s.id=b.supervisor_id LEFT JOIN users c ON c.id=b.coordinator_id WHERE b.active=1 ${ids ? `AND b.id IN (${inList(ids)})` : ''} ORDER BY un.code, b.code`)
     .map(b => {
+      const exams = all('SELECT id, date, name FROM exams WHERE batch_id=? AND date>=? ORDER BY date', b.id, dayStr());
+      b.exam_date = exams[0] ? exams[0].date : null; b.exam_note = exams[0] ? exams[0].name : null; b.exams = exams;
       const ls = all('SELECT * FROM lectures WHERE batch_id=?', b.id), sb = latestSubs(b.id);
       const days = b.exam_date ? Math.ceil((Date.parse(b.exam_date + 'T00:00:00Z') - Date.parse(dayStr() + 'T00:00:00Z')) / DAY) : null;
       const revisions = ls.filter(l => l.type === 'revision' && delivered(l)).length;
@@ -274,7 +277,8 @@ function dailyReport(u, t = now()) {
     const base = { id: x.id, body: x.body.slice(0, 160), student: x.student, priority: x.priority, due_at: x.due_at, ...who(x.batch_id), doctor: names[x.doctor_id] || null };
     if (x.due_at && x.due_at < T) { const h = ticketHolder({ ...x, closed_at: null }); lateQ.push({ ...base, stage: `عدّى المهلة اللي اتحددت (${x.kind === 'problem' ? 'مشكلة' : 'سؤال'})`, owner: h === 'doctor' ? `د. ${base.doctor || '—'}` : h === 'cs' ? 'خدمة العملاء' : both(base, T - x.due_at), late_ms: T - x.due_at }); continue; }
     if (x.kind !== 'question') continue;
-    if (!before(x.sent_doctor_at)) { if (T - x.created_at > lim) lateQ.push({ ...base, stage: 'لسه مااتبعتش للدكتور', owner: both(base, T - x.created_at - lim), late_ms: T - x.created_at - lim }); }
+    if (before(x.returned_at)) { if (T - x.returned_at > csLim) lateQ.push({ ...base, stage: 'الرد ماوصلش للطالب', owner: 'خدمة العملاء', late_ms: T - x.returned_at - csLim }); }
+    else if (!before(x.sent_doctor_at)) { if (T - x.created_at > lim) lateQ.push({ ...base, stage: 'لسه مااتبعتش للدكتور', owner: both(base, T - x.created_at - lim), late_ms: T - x.created_at - lim }); }
     else if (!before(x.reply_at)) waitingDoctor.push({ ...base, age_ms: T - x.sent_doctor_at });
     else if (!before(x.returned_at)) { if (T - x.reply_at > lim) lateQ.push({ ...base, stage: 'الدكتور رد ومارجعش لخدمة العملاء', owner: both(base, T - x.reply_at - lim), late_ms: T - x.reply_at - lim }); }
     else if (T - x.returned_at > csLim) lateQ.push({ ...base, stage: 'الرد ماوصلش للطالب', owner: 'خدمة العملاء', late_ms: T - x.returned_at - csLim });

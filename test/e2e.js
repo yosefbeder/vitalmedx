@@ -108,17 +108,17 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await doc.req('GET', '/api/batches').then(() => ok(false), e => ok(e.status === 403, 'doctor no batches'));
     // ticket flow
     const cs = new Client(); await cs.login('cs1@vitalmedx.app', pw['cs1@vitalmedx.app']);
-    const T = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'ليه الـ brachial plexus كده؟', student: 'طالب 1' });
+    const T = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'ليه الـ brachial plexus كده؟', student: 'طالب 1', to: 'coord' });
     tgCalls.length = 0;
     const st = await walaa.req('PATCH', '/api/tickets/' + T.id, { action: 'send_doctor' }); ok(st.delivered_to_bot, 'ticket to doctor');
     const qmsg = tgCalls.find(c => c.method === 'sendMessage');
     await hook(msg(5551, { text: 'عشان كذا وكذا', reply_to_message: { message_id: msgId } })); await sleep(100);
-    let tk = (await walaa.req('GET', '/api/tickets')).find(t => t.id === T.id); ok(tk.reply === 'عشان كذا وكذا' && tk.stage === 'return', 'doctor replied');
+    let tk = (await walaa.req('GET', '/api/tickets')).find(t => t.id === T.id); ok(tk.reply === 'عشان كذا وكذا' && tk.stage === 'deliver', 'doctor replied → straight to CS');
     await walaa.req('PATCH', '/api/tickets/' + T.id, { action: 'return' });
     await cs.req('PATCH', '/api/tickets/' + T.id, { action: 'deliver' });
     tk = (await cs.req('GET', '/api/tickets')).find(t => t.id === T.id); ok(tk.stage === 'closed' && !tk.coord_late && !tk.cs_late, 'ticket closed on time');
     // voice question + voice reply
-    const vfd = new FormData(); vfd.append('kind', 'question'); vfd.append('batch_id', b11.id); vfd.append('lecture_id', L1.id); vfd.append('body', '');
+    const vfd = new FormData(); vfd.append('kind', 'question'); vfd.append('batch_id', b11.id); vfd.append('lecture_id', L1.id); vfd.append('body', ''); vfd.append('to', 'coord');
     vfd.append('att', new Blob([Buffer.from('VOICEQ')], { type: 'audio/ogg' }), 'q.ogg');
     const VT = await cs.req('POST', '/api/tickets', vfd);
     const attRes = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${VT.id}/attachment`, { headers: { cookie: walaa.cookie } }); ok((await attRes.text()) === 'VOICEQ', 'attachment served');
@@ -126,7 +126,7 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await walaa.req('PATCH', '/api/tickets/' + VT.id, { action: 'send_doctor' });
     const sv = tgCalls.find(c => c.method === 'sendVoice'); ok(sv && /reply_to_message_id/.test(sv.body.text || ''), 'voice sent to doctor as reply');
     await hook(msg(5551, { voice: { file_id: 'VREPLY' }, reply_to_message: { message_id: msgId } })); await sleep(100);
-    let vt = (await walaa.req('GET', '/api/tickets')).find(t => t.id === VT.id); ok(vt.reply_file_id === 'VREPLY' && vt.reply_kind === 'voice' && vt.stage === 'return', 'voice reply stored');
+    let vt = (await walaa.req('GET', '/api/tickets')).find(t => t.id === VT.id); ok(vt.reply_file_id === 'VREPLY' && vt.reply_kind === 'voice' && vt.stage === 'deliver', 'voice reply stored');
     const rf = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${VT.id}/reply-file`, { headers: { cookie: cs.cookie } }); ok((await rf.text()) === 'OGGDATA', 'reply file proxied');
     // full bot flow: CS → coordinator → doctor → coordinator → CS
     const users = await admin.req('GET', '/api/users');
@@ -142,6 +142,8 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     ok(bBtn, 'batch buttons'); await cbq(6001, bBtn.callback_data);
     kbm = lastKb(); const lBtn = kbm.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)); ok(lBtn, 'lecture buttons'); ok(kbm.body.reply_markup.inline_keyboard.flat().some(x => x.callback_data.startsWith('tg:')), 'general doctor option shown');
     tgCalls.length = 0; await cbq(6001, lBtn.callback_data);
+    const toK = tgCalls.find(c => /يروح لمين/.test(c.body.text || '')); ok(toK, 'bot asks route');
+    tgCalls.length = 0; await cbq(6001, toK.body.reply_markup.inline_keyboard[1][0].callback_data);
     const askS = tgCalls.find(c => /اسم الطالب/.test(c.body.text || '')); ok(askS && /ts:/.test(JSON.stringify(askS.body.reply_markup)), 'bot asks student name with skip');
     tgCalls.length = 0; await hook(msg(6001, { text: 'أحمد 0555123456' })); await sleep(150);
     const prK = tgCalls.find(c => /الأولوية/.test(c.body.text || '')); ok(prK, 'bot asks priority');
@@ -150,15 +152,15 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     tgCalls.length = 0; await cbq(6001, dueK.body.reply_markup.inline_keyboard[1][1].callback_data); await sleep(100);
     const toCoord = tgCalls.find(c => String(c.body.chat_id) === '6002' && /سؤال جديد/.test(c.body.text || '')); ok(toCoord, 'coordinator notified');
     ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '6002' && c.body.voice === 'CSVOICE'), 'coordinator got voice');
-    const tdBtn = toCoord.body.reply_markup.inline_keyboard[0][0]; ok(tdBtn.text.includes('د. تجربة'), 'lecture doctor first');
+    ok(/هرد أنا/.test(toCoord.body.reply_markup.inline_keyboard[0][0].text), 'self-reply button');
+    const tdBtn = toCoord.body.reply_markup.inline_keyboard[1][0]; ok(tdBtn.text.includes('د. تجربة'), 'lecture doctor first');
     const btid = Number(tdBtn.callback_data.split(':')[1]);
     tgCalls.length = 0; await cbq(6002, tdBtn.callback_data);
     const dq = tgCalls.find(c => String(c.body.chat_id) === '5551' && /سؤال من طالب/.test(c.body.text || '')); ok(dq, 'doctor got question');
     ok(tgCalls.some(c => c.method === 'sendVoice' && String(c.body.chat_id) === '5551' && c.body.reply_to_message_id), 'doctor got voice as reply');
     tgCalls.length = 0;
     await hook(msg(5551, { text: 'الإجابة كذا', reply_to_message: { message_id: dq ? msgId - 1 : 0 } })); await sleep(150);
-    const toC2 = tgCalls.find(c => String(c.body.chat_id) === '6002' && /رد على السؤال/.test(c.body.text || '')); ok(toC2 && /الإجابة كذا/.test(toC2.body.text), 'coordinator got reply');
-    tgCalls.length = 0; await cbq(6002, toC2.body.reply_markup.inline_keyboard[0][0].callback_data);
+    const toC2 = tgCalls.find(c => String(c.body.chat_id) === '6002' && /رد على السؤال/.test(c.body.text || '')); ok(toC2 && /الإجابة كذا/.test(toC2.body.text) && /راح لخدمة العملاء/.test(toC2.body.text), 'coordinator informed of reply');
     const toCs = tgCalls.find(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '')); ok(toCs, 'cs got reply');
     await cbq(6001, toCs.body.reply_markup.inline_keyboard[0][0].callback_data);
     const bt = (await admin.req('GET', '/api/tickets')).find(t => t.id === btid); ok(bt.stage === 'closed' && bt.att_kind === 'voice' && bt.lecture_id === L1.id && bt.student === 'أحمد 0555123456', 'bot flow closed (with student)');
@@ -226,7 +228,7 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const s = await admin.req('POST', `/api/finance/${d.id}/settle`, { kind: 'early' }); ok(s.net === 180, 'settle net');
     f = await admin.req('GET', '/api/finance/' + d.id); ok(f.net === 0 && f.settlements.length === 1 && f.pendingLecs === 1, 'after settle');
     // cs variable pay
-    const cs2id = (await admin.req('GET', '/api/users')).find(u => u.email === 'cs2@vitalmedx.app').id;
+    const cs2id = (await admin.req('POST', '/api/users', { name: 'خدمة 2', email: 'cs2@vitalmedx.app', role: 'cs', password: 'cs-two-pass-1' })).id;
     await admin.req('POST', '/api/extra', { user_id: cs2id, amount: 3000, note: 'شهر نوفمبر' });
     ok((await admin.req('GET', '/api/finance')).rows.find(r => r.id === cs2id).net === 3000, 'extra pay');
     // month history + statement PDF + period-limited close
@@ -342,10 +344,14 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     const rf7 = await fetch(`http://127.0.0.1:${PORT}/api/tickets/${gq.id}/reply-file`, { headers: { cookie: doc.cookie } }); ok(rf7.status === 200, "doctor plays own reply");
     // supervisor takes over the late coordinator step
     await sup.req('PATCH', '/api/tickets/' + gq.id, { action: 'priority', priority: 2 });
-    DB.run('UPDATE tickets SET reply_at=? WHERE id=?', Date.now() - 3 * 3600e3, gq.id);
-    await sup.req('PATCH', '/api/tickets/' + gq.id, { action: 'return' });
-    const gt = (await admin.req('GET', '/api/tickets')).find(x => x.id === gq.id);
-    ok(gt.by.returned.role === 'supervisor' && gt.coord_late && gt.both_late && gt.priority === 2, 'supervisor did it, late on both');
+    ok((await admin.req('GET', '/api/tickets')).find(x => x.id === gq.id).stage === 'deliver', 'direct reply skipped the return step');
+    // coordinator-routed question answered by the supervisor himself (coordinator late)
+    const cq = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'سؤال للمسؤول', to: 'coord' });
+    DB.run('UPDATE tickets SET created_at=? WHERE id=?', Date.now() - 3 * 3600e3, cq.id);
+    tgCalls.length = 0; await sup.req('PATCH', '/api/tickets/' + cq.id, { action: 'self_reply', reply: 'الإجابة من المشرف' }); await sleep(100);
+    const gt = (await admin.req('GET', '/api/tickets')).find(x => x.id === cq.id);
+    console.log(JSON.stringify({by:gt.by,stage:gt.stage,pr:gt.priority,calls:tgCalls.map(c=>[c.body.chat_id,(c.body.text||'').slice(0,30)])})); ok(gt.by.returned.role === 'supervisor' && gt.stage === 'deliver' && gt.priority === 1 && tgCalls.some(c => String(c.body.chat_id) === '6001' && /رد جاهز/.test(c.body.text || '')), 'supervisor answered himself → CS');
+    ok((await admin.req('GET', '/api/daily-report')).lateQ.every(x => x.id !== cq.id), 'answered not late anymore');
     const LS = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'theory', name: 'Sup takeover' });
     DB.run('UPDATE lectures SET video_at=?, q_at=? WHERE id=?', Date.now(), Date.now(), LS.id);
     await sup.req('PATCH', '/api/lectures/' + LS.id, { action: 'approve', video: true, q: true });
@@ -393,6 +399,70 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     await new Client().req('POST', '/api/forgot/reset', { email: 'dr@test.com', code, pass: 'new-pass-123' });
     const dn = new Client(); await dn.login('dr@test.com', 'new-pass-123'); ok((await dn.req('GET', '/api/me')).role === 'doctor', 'login with new password');
     await new Client().req('POST', '/api/forgot/reset', { email: 'dr@test.com', code, pass: 'other-pass-123' }).then(() => ok(false), e => ok(e.status === 400, 'code single use'));
+    // ===== v1.8 =====
+    // default: lecture question goes straight to the lecture's doctor
+    const dq8 = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'سؤال مباشر' });
+    let t8 = (await walaa.req('GET', '/api/tickets')).find(x => x.id === dq8.id); ok(dq8.direct && t8.stage === 'doctor' && t8.direct, 'lecture question direct to doctor, visible to coordinator');
+    // doctor late → coordinator alerted
+    await admin.req('PUT', '/api/settings', { doctor_reply_alert_hours: '3' });
+    DB.run('UPDATE tickets SET sent_doctor_at=? WHERE id=?', Date.now() - 4 * 3600e3, dq8.id);
+    tgCalls.length = 0; await jobs.reminders(); ok(tgCalls.some(c => String(c.body.chat_id) === '6002' && /مارد على/.test(c.body.text || '')), 'coordinator alerted doctor slow');
+    // revision task with covers
+    const RV = await walaa.req('POST', '/api/lectures', { batch_id: b11.id, doctor_id: d.id, type: 'revision', name: 'Anatomy Revision', covers: `${L1.id},${L2.id}` });
+    const rv = await walaa.req('GET', '/api/lectures/' + RV.id); ok(rv.covers_names.length === 2 && rv.type === 'revision' && rv.price > 0, 'revision covers + revision price');
+    ok(tgCalls.some(c => String(c.body.chat_id) === '5551' && /مراجعة جديدة/.test(c.body.text || '') && /على المحاضرات/.test(c.body.text || '')), 'doctor told what the revision covers');
+    // several exams per batch
+    await walaa.req('POST', `/api/batches/${b11.id}/exams`, { date: '2099-12-30', name: 'نهائي' });
+    await walaa.req('POST', `/api/batches/${b11.id}/exams`, { date: '2099-12-11', name: 'ميدتيرم' });
+    let bb = (await walaa.req('GET', '/api/batches')).find(x => x.id === b11.id); ok(bb.exams.length >= 2 && bb.exam_date === bb.exams[0].date && bb.exams[0].date <= bb.exams[1].date, 'nearest exam first');
+    await walaa.req('DELETE', '/api/exams/' + bb.exams.find(e => e.name === 'ميدتيرم').id); bb = (await walaa.req('GET', '/api/batches')).find(x => x.id === b11.id); ok(!bb.exams.some(e => e.name === 'ميدتيرم'), 'exam deleted');
+    // chats: coordinator ↔ doctor (dashboard + bot reply)
+    tgCalls.length = 0; const cm = await walaa.req('POST', '/api/chats/' + d.id, { body: 'هتنزل المراجعة إمتى؟' });
+    const cmsg = tgCalls.find(c => String(c.body.chat_id) === '5551' && /رسالة من ولاء/.test(c.body.text || '')); ok(cm.delivered && cmsg, 'chat delivered on bot');
+    await hook(msg(5551, { text: 'بكرة إن شاء الله', reply_to_message: { message_id: msgId - 0 } })); await sleep(120);
+    const wid8 = (await walaa.req("GET", "/api/me")).id; let th = await walaa.req("GET", `/api/chats/${wid8}/${d.id}`);
+    ok(th.length === 2 && th[1].body === 'بكرة إن شاء الله' && th[1].from_id === d.id, 'doctor replied via bot reply');
+    ok((await admin.req('GET', '/api/chats?all=1')).others.some(o => (o.a === wid8 && o.b === d.id) || (o.b === wid8 && o.a === d.id)), 'admin sees team chats');
+    await cs.req('POST', '/api/chats/' + d.id, { body: 'x' }).then(() => ok(false), e => ok(e.status === 403, 'cs cannot chat doctor'));
+    await salah.req("GET", `/api/chats/${wid8}/${d.id}`).then(() => ok(false), e => ok(e.status === 403, 'others cannot read'));
+    // bot: /msg flow from CS to coordinator
+    tgCalls.length = 0; await hook(msg(6001, { text: '/msg' })); await sleep(100);
+    const pick = lastKb(); const wBtn = pick.body.reply_markup.inline_keyboard.flat().find(x => x.text.includes('ولاء')); ok(wBtn, 'cs contacts include coordinator');
+    await cbq(6001, wBtn.callback_data); tgCalls.length = 0; await hook(msg(6001, { text: 'الطالب محمد مستني' })); await sleep(120);
+    ok(tgCalls.some(c => String(c.body.chat_id) === '6002' && /الطالب محمد مستني/.test(c.body.text || '')), 'bot chat relayed');
+    // bot: /new revision from coordinator
+    tgCalls.length = 0; await hook(msg(6002, { text: '/new' })); await sleep(100);
+    let k8 = lastKb(); await cbq(6002, k8.body.reply_markup.inline_keyboard.flat().find(x => x.text.startsWith('1-1')).callback_data);
+    k8 = lastKb(); await cbq(6002, k8.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data === 'nf:d:' + d.id).callback_data);
+    await cbq(6002, 'nf:t:revision'); k8 = lastKb(); ok(/خلاص/.test(JSON.stringify(k8.body.reply_markup)), 'covers picker');
+    await cbq(6002, 'nf:c:' + L1.id); await cbq(6002, 'nf:cd:0');
+    await hook(msg(6002, { text: 'Bot Revision' })); await sleep(100);
+    await hook(msg(6002, { document: { file_id: 'LECPDF', mime_type: 'application/pdf' } })); await sleep(100);
+    ok(tgCalls.some(c => /راجع قبل الإرسال/.test(c.body.text || '') && /Bot Revision/.test(c.body.text || '')), 'confirm summary');
+    tgCalls.length = 0; await cbq(6002, 'nf:go:0');
+    const br = (await walaa.req('GET', '/api/lectures?limit=200')).find(l => l.name === 'Bot Revision'); ok(br && br.type === 'revision', 'lecture created from bot');
+    ok(tgCalls.some(c => String(c.body.chat_id) === '5551' && c.body.document === 'LECPDF'), 'pdf forwarded to doctor');
+    ok((await walaa.req('GET', '/api/lectures/' + br.id)).covers_names[0] === 'Anatomy – Lec 01', 'bot covers saved');
+    // bot menu
+    tgCalls.length = 0; await hook(msg(5551, { text: '/menu' })); await sleep(80); ok(/mn:tasks/.test(JSON.stringify(lastKb().body.reply_markup)), 'doctor menu');
+    for (const a of ['tasks', 'myq', 'money', 'rate']) { tgCalls.length = 0; await cbq(5551, 'mn:' + a); ok(tgCalls.some(c => String(c.body.chat_id) === '5551' && c.method === 'sendMessage'), 'doctor menu ' + a); }
+    for (const a of ['late', 'appr', 'upl', 'tk', 'ck', 'exam']) { tgCalls.length = 0; await cbq(6002, 'mn:' + a); ok(tgCalls.some(c => String(c.body.chat_id) === '6002'), 'coordinator menu ' + a); }
+    for (const a of ['dlv', 'tk', 'subs']) { tgCalls.length = 0; await cbq(6001, 'mn:' + a); ok(tgCalls.some(c => String(c.body.chat_id) === '6001'), 'cs menu ' + a); }
+    // bot approve + upload
+    DB.run('UPDATE lectures SET video_at=?, q_at=?, video_file=?, q_file=? WHERE id=?', Date.now(), Date.now(), 'VF', 'QF', br.id);
+    await cbq(6002, 'ap:' + br.id); await cbq(6002, 'upl:' + br.id);
+    const bl = await walaa.req('GET', '/api/lectures/' + br.id); ok(bl.video_ok_at && bl.q_ok_at && bl.uploaded_at, 'approve + upload from bot');
+    await admin.req('PATCH', '/api/lectures/' + br.id, { action: 'cancel' }); await admin.req('PATCH', '/api/lectures/' + RV.id, { action: 'cancel' });
+    // bot: exam via menu, checklist toggle
+    await cbq(6002, 'ex:' + b11.id); await hook(msg(6002, { text: '2099-11-01 فارما' })); await sleep(80);
+    ok((await walaa.req('GET', '/api/batches')).find(x => x.id === b11.id).exams.some(e => e.name === 'فارما'), 'exam from bot');
+    const ck0 = (await walaa.req('GET', '/api/checklist')).items.find(i => !i.done && !i.weekly).key; await cbq(6002, 'ck:' + ck0);
+    ok((await walaa.req('GET', '/api/checklist')).items.find(i => i.key === ck0).done, 'checklist from bot');
+    // bot: coordinator answers himself
+    const sq = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'سؤال سهل', to: 'coord' });
+    tgCalls.length = 0; await cbq(6002, 'tsr:' + sq.id); const pr8 = tgCalls.find(c => c.body.reply_markup && c.body.reply_markup.force_reply); ok(pr8, 'self reply prompt');
+    tgCalls.length = 0; await hook(msg(6002, { text: 'الإجابة سهلة', reply_to_message: { message_id: msgId - 0 } })); await sleep(120);
+    ok(tgCalls.some(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '') && /الإجابة سهلة/.test(c.body.text || '')), 'self reply reached CS');
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);
