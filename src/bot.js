@@ -65,7 +65,33 @@ async function sendTicket(t) {
     const r = await sendFile(method, field, d.tg_id, require('node:fs').readFileSync(t.att_path), t.att_name || 'file', `سؤال #${t.id}`, mime, m.message_id);
     if (r) { const f = r.voice || r.audio || r.video || r.document || (r.photo && r.photo.at(-1)); run('UPDATE tickets SET att_msg_id=?, att_file_id=? WHERE id=?', r.message_id, f ? f.file_id : null, t.id); }
   }
+  await sendParts(d.tg_id, t, m.message_id, true);
   return true;
+}
+// the rest of a question sent in several messages
+async function sendPart(chat, t, p, replyTo, label = 'تكملة') {
+  const cap = `${label} السؤال #${t.id}${p.body ? `:\n${p.body}` : ''}`, ex = replyTo ? { reply_to_message_id: replyTo } : {};
+  if (p.file_id && p.file_kind !== 'video_note') return sendByKind(chat, p.file_kind, p.file_id, cap.slice(0, 1000), ex);
+  if (p.path && require('node:fs').existsSync(p.path)) { const mime = p.mime || '', [mt, f] = /ogg|opus/.test(mime) && !/webm/.test(mime) ? ['sendVoice', 'voice'] : mime.startsWith('audio/') ? ['sendAudio', 'audio'] : mime.startsWith('image/') ? ['sendPhoto', 'photo'] : mime.startsWith('video/') ? ['sendVideo', 'video'] : ['sendDocument', 'document']; return sendFile(mt, f, chat, require('node:fs').readFileSync(p.path), p.name || 'file', cap.slice(0, 1000), mime, replyTo); }
+  if (p.file_id) { const r = await sendByKind(chat, p.file_kind, p.file_id, '', ex); if (!p.body) return r; }
+  return send(chat, cap, ex);
+}
+async function sendParts(chat, t, replyTo, toDoctor) {
+  for (const p of all('SELECT * FROM ticket_parts WHERE ticket_id=? ORDER BY id', t.id)) { const r = await sendPart(chat, t, p, replyTo); if (toDoctor && r && r.message_id) run('UPDATE ticket_parts SET tg_msg_id=? WHERE id=?', r.message_id, p.id); }
+}
+// something added after the question was sent (CS replied on the confirmation, or from the dashboard)
+async function addPart(t, user, part) {
+  if (t.reply_at || t.closed_at) return { ok: false, msg: `السؤال #${t.id} اترد عليه خلاص. لو ده سؤال جديد ابعته من غير Reply.` };
+  const r = run('INSERT INTO ticket_parts(ticket_id,body,file_id,file_kind,path,mime,name,by,created_at) VALUES(?,?,?,?,?,?,?,?,?)', t.id, part.body || null, part.file_id || null, part.file_kind || null, part.path || null, part.mime || null, part.name || null, user.id, Date.now());
+  const p = one('SELECT * FROM ticket_parts WHERE id=?', Number(r.lastInsertRowid));
+  const c = one('SELECT u.tg_id FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id) || {};
+  if (t.sent_doctor_at && t.doctor_id) {
+    const d = one('SELECT tg_id FROM users WHERE id=?', t.doctor_id) || {};
+    if (d.tg_id) { const m = await sendPart(d.tg_id, t, p, t.tg_msg_id, '➕ إضافة على'); if (m && m.message_id) run('UPDATE ticket_parts SET tg_msg_id=? WHERE id=?', m.message_id, p.id); }
+    if (c.tg_id) await send(c.tg_id, `➕ اتضاف جزء جديد على السؤال #${t.id}${p.body ? `: ${p.body.slice(0, 200)}` : ''}`);
+  } else if (c.tg_id) await sendPart(c.tg_id, t, p, null, '➕ إضافة على');
+  audit(user.id, 'ticket_add_part', { id: t.id });
+  return { ok: true, msg: `اتضافت على السؤال #${t.id} ✓` };
 }
 const KIND_SEND = { voice: ['sendVoice', 'voice'], audio: ['sendAudio', 'audio'], photo: ['sendPhoto', 'photo'], video: ['sendVideo', 'video'], video_note: ['sendVideoNote', 'video_note'], document: ['sendDocument', 'document'] };
 const sendByKind = (chat_id, kind, file_id, caption, extra = {}) => { const [m, f] = KIND_SEND[kind] || KIND_SEND.document; return call(m, { chat_id, [f]: file_id, ...(kind === 'video_note' ? {} : { caption }), ...extra }); };
@@ -83,6 +109,7 @@ async function sendAtt(chat, t, caption, extra) {
 async function notifyCoordNew(t) {
   const c = one('SELECT u.tg_id FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id);
   if (!c || !c.tg_id) return;
+  if (one('SELECT 1 FROM ticket_parts WHERE ticket_id=?', t.id)) await sendParts(c.tg_id, t, null, false);
   if (t.kind === 'problem') { await send(c.tg_id, `مشكلة جديدة #${t.id}\n${tkHead(t)}\n\n${t.body}`, { reply_markup: { inline_keyboard: [[{ text: 'اتحلت ✓', callback_data: `tp:${t.id}` }]] } }); if (t.att_file_id || t.att_path) await sendAtt(c.tg_id, t, `مرفق المشكلة #${t.id}`); return; }
   const docs = [];
   if (t.lecture_id) { const d = one('SELECT u.id, u.name FROM lectures l JOIN users u ON u.id=l.doctor_id WHERE l.id=?', t.lecture_id); if (d) docs.push(d); }
@@ -93,6 +120,7 @@ async function notifyCoordNew(t) {
 }
 async function notifyCoordDirect(t) {
   const c = one('SELECT u.tg_id FROM batches b JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id), d = one('SELECT name FROM users WHERE id=?', t.doctor_id) || {};
+  if (c && c.tg_id) await sendParts(c.tg_id, t, null, false);
   if (c && c.tg_id) await send(c.tg_id, `سؤال اتبعت مباشرة لـ ${d.name} #${t.id}\n${tkHead(t)}\n\n${t.body}\n\nانت بتتابع بس: الرد هيروح لخدمة العملاء على طول، ولو الدكتور اتأخر هيجيلك تنبيه. تقدر تكلمه من /msg.`);
 }
 async function notifyCoordReply(t) {
@@ -167,6 +195,12 @@ function pickKeyboard(docId, kind, pendingId) {
   return { ls, kb: { inline_keyboard: ls.map(l => [{ text: `#${l.id} ${l.name} · ${L.typeLabel(l)}${L.isLate(null, l.sent_at, l.excused) ? ' · متأخر' : ''}`.slice(0, 60), callback_data: `p:${pendingId}:${l.id}` }]) } };
 }
 
+const queues = new Map(); // one update at a time per chat (forwarded batches arrive together)
+function handleUpdateQueued(u) {
+  const m = u.message || (u.callback_query && u.callback_query.message), key = String(m && m.chat ? m.chat.id : u.callback_query ? u.callback_query.from.id : 0);
+  const p = (queues.get(key) || Promise.resolve()).then(() => handleUpdate(u)).catch(e => console.error('update', e));
+  queues.set(key, p); p.finally(() => { if (queues.get(key) === p) queues.delete(key); }); return p;
+}
 async function handleUpdate(u) {
   if (u.callback_query) return onCallback(u.callback_query);
   const m = u.message; if (!m || !m.chat) return;
@@ -203,16 +237,23 @@ async function handleUpdate(u) {
   const fl = one('SELECT * FROM bot_flows WHERE tg_id=? AND at>?', from, Date.now() - 20 * 60e3);
   if (fl && !text.startsWith('/')) { const r = await onFlowInput(fl, m, user, chat, from, text, mc); if (r !== false) return r; }
   if (user.role === 'cs' || (user.role === 'admin' && !text.startsWith('/'))) {
-    const aw = one("SELECT * FROM bot_drafts WHERE tg_id=? AND (await_student=1 OR stage IN ('priority','due')) AND created_at>? ORDER BY id DESC", from, Date.now() - 6 * L.H);
-    if (aw) {
-      if (aw.await_student && text && !msgContent(m) && text.length <= 120) { run('UPDATE bot_drafts SET student=?, await_student=0 WHERE id=?', text, aw.id); return askPriority(null, chat, aw.id); }
-      await createFromDraft(null, chat, user, aw); // a new message came instead: save the pending one with defaults
+    const c0 = msgContent(m), body0 = (text || m.caption || '').trim();
+    // Reply on "السؤال اتسجل #.." → add to that question
+    if (rTo && (c0 || body0)) { const tk = one('SELECT * FROM tickets WHERE cs_msg_id=? AND created_by=? ORDER BY id DESC', rTo, user.id); if (tk) { const r = await addPart(tk, user, { body: body0, file_id: c0 && c0[1], file_kind: c0 && c0[0] }); return send(chat, r.msg); } }
+    // a question still being filled in (last 15 min): more messages join it
+    const cur = one('SELECT * FROM bot_drafts WHERE tg_id=? AND created_at>? ORDER BY id DESC', from, Date.now() - 15 * 60e3);
+    if (cur && (c0 || body0)) {
+      if (cur.await_student && text && !c0 && text.length <= 120) { run('UPDATE bot_drafts SET student=?, await_student=0 WHERE id=?', text, cur.id); return askPriority(null, chat, cur.id); }
+      const ex = JSON.parse(cur.extra || '[]'); ex.push({ body: body0 || null, file_id: c0 ? c0[1] : null, file_kind: c0 ? c0[0] : null });
+      run('UPDATE bot_drafts SET extra=?, created_at=? WHERE id=?', JSON.stringify(ex), Date.now(), cur.id);
+      return send(chat, `اتضافت للسؤال ✓ (${ex.length + 1} رسايل). كمّل الاختيار من الأزرار اللي فوق.`);
     }
+    // older unfinished ones: save those that have a batch with defaults, drop the rest
+    for (const old of all('SELECT * FROM bot_drafts WHERE tg_id=? ORDER BY id', from)) { if (old.batch_id) await createFromDraft(null, chat, user, old); else run('DELETE FROM bot_drafts WHERE id=?', old.id); }
   }
   if (user.role === 'cs' || (user.role === 'admin' && !text.startsWith('/'))) {
     const c = msgContent(m), body = (text || m.caption || '').trim();
     if (!c && !body) return send(chat, 'ابعت سؤال الطالب هنا (نص أو ريكورد أو صورة)، وأنا هوصّله لمسؤول الدفعة.');
-    run('DELETE FROM bot_drafts WHERE tg_id=? AND batch_id IS NULL', from);
     const r = run('INSERT INTO bot_drafts(tg_id,body,file_id,file_kind,created_at) VALUES(?,?,?,?,?)', from, body || null, c ? c[1] : null, c ? c[0] : null, Date.now());
     return send(chat, 'تمام. ده سؤال لدكتور ولا مشكلة؟', { reply_markup: { inline_keyboard: [[{ text: 'سؤال لدكتور', callback_data: `k:${r.lastInsertRowid}:question` }, { text: 'مشكلة', callback_data: `k:${r.lastInsertRowid}:problem` }]] } });
   }
@@ -220,7 +261,7 @@ async function handleUpdate(u) {
   if (text === '/tasks') return send(chat, tasksText(user));
   // reply to a student question
   const replyTo = m.reply_to_message && m.reply_to_message.message_id;
-  let ticket = replyTo ? one('SELECT * FROM tickets WHERE (tg_msg_id=? OR att_msg_id=?) AND doctor_id=? AND reply_at IS NULL', replyTo, replyTo, user.id) : null;
+  let ticket = replyTo ? one('SELECT * FROM tickets WHERE (tg_msg_id=? OR att_msg_id=? OR id IN (SELECT ticket_id FROM ticket_parts WHERE tg_msg_id=?)) AND doctor_id=? AND reply_at IS NULL', replyTo, replyTo, replyTo, user.id) : null;
   const rf = m.voice ? ['voice', m.voice.file_id] : m.audio ? ['audio', m.audio.file_id] : m.video_note ? ['video_note', m.video_note.file_id] : m.photo ? ['photo', m.photo.at(-1).file_id] : (ticket && m.video) ? ['video', m.video.file_id] : (ticket && m.document) ? ['document', m.document.file_id] : null;
   if (!ticket && (text || (rf && !m.video && !m.document)) && !m.video && !m.document) {
     const waiting = all('SELECT * FROM tickets WHERE doctor_id=? AND sent_doctor_at IS NOT NULL AND reply_at IS NULL', user.id);
@@ -367,17 +408,19 @@ async function createFromDraft(q, chat, user, dr) {
     dr.kind || 'question', dr.batch_id, lec ? lec.id : null, lec ? lec.doctor_id : gdoc ? gdoc.id : null, body, dr.student ? String(dr.student).slice(0, 120) : null, user.id, n, dr.file_id, dr.file_kind, dr.file_kind ? KIND_MIME[dr.file_kind] : null, dr.file_kind ? `${dr.file_kind}` : null,
     dr.priority ?? 1, dr.due_hours ? n + dr.due_hours * L.H : null, gdoc ? 1 : 0, gdoc ? n : null, gdoc ? user.id : null);
   run('DELETE FROM bot_drafts WHERE id=?', dr.id);
+  for (const p of JSON.parse(dr.extra || '[]')) run('INSERT INTO ticket_parts(ticket_id,body,file_id,file_kind,by,created_at) VALUES(?,?,?,?,?,?)', Number(r.lastInsertRowid), p.body, p.file_id, p.file_kind, user.id, n);
   const t = one('SELECT * FROM tickets WHERE id=?', Number(r.lastInsertRowid));
   audit(user.id, 'ticket_bot_new', { id: t.id });
+  const done = async msg => { msg += '\n\n↩️ لو الطالب بعت حاجة زيادة على نفس السؤال، اعمل Reply على الرسالة دي وابعتها.'; const x = q ? await editMsg(q, msg) : await send(chat, msg); const mid = q && q.message ? q.message.message_id : x && x.message_id; if (mid) run('UPDATE tickets SET cs_msg_id=? WHERE id=?', mid, t.id); return x; };
   if (gdoc) {
     const ok = await sendTicket(t); await notifyCoordDirect(t);
     const msg = `السؤال اتسجل #${t.id} ✓\nواتبعت مباشرة لـ ${gdoc.name}${ok ? '' : ' (مش رابط البوت، هيشوفه في لوحته)'}، ومسؤول الدفعة بيتابعه.\nالرد هيوصلك هنا على طول.`;
-    return q ? editMsg(q, msg) : send(chat, msg);
+    return done(msg);
   }
   await notifyCoordNew(t);
   const c = one('SELECT u.name, u.tg_id FROM batches b LEFT JOIN users u ON u.id=b.coordinator_id WHERE b.id=?', t.batch_id) || {};
   const msg = `${t.kind === 'problem' ? 'المشكلة' : 'السؤال'} اتسجل #${t.id} ✓\nووصل لـ ${c.name || 'مسؤول الدفعة'}${c.tg_id ? '' : ' (مش رابط البوت، هيشوفه من اللوحة)'}.${t.kind === 'question' ? '\nهبعتلك الرد هنا أول ما يرجع.' : ''}`;
-  return q ? editMsg(q, msg) : send(chat, msg);
+  return done(msg);
 }
 const transferKb = id => ({ inline_keyboard: [[{ text: 'استلمت ✓', callback_data: `rc:${id}` }, { text: 'فيه مشكلة', callback_data: `rx:${id}` }]] });
 async function recordTransferProblem(tr, user, text, chat) {
@@ -594,4 +637,4 @@ async function menuAction(a, user, chat, tg) {
   return null;
 }
 
-module.exports = { deliverChat, afterDoctorReply, showMenu, menuAction, notifyCoordDirect, prioLine, lateAlert, transferKb, confirmTransfer, recordTransferProblem, notifyCoordNew, notifyCsReturn, notifyCoordReply, KIND_MIME, call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate, enabled, fmt, money, forwardFile, getFileUrl };
+module.exports = { addPart, deliverChat, afterDoctorReply, showMenu, menuAction, notifyCoordDirect, prioLine, lateAlert, transferKb, confirmTransfer, recordTransferProblem, notifyCoordNew, notifyCsReturn, notifyCoordReply, KIND_MIME, call, send, sendFile, sendLecture, sendTicket, notifyPenalty, notifyPriceChange, remind, sendAdmin, handleUpdate: handleUpdateQueued, enabled, fmt, money, forwardFile, getFileUrl };

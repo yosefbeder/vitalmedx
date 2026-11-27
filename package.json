@@ -1,6 +1,6 @@
 {
   "name": "vitalmedx",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "description": "VitalMedX – نظام متابعة الفريق والدكاترة مع بوت تليجرام",
   "main": "src/server.js",

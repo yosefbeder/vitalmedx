@@ -463,6 +463,38 @@ const msg = (from, extra) => ({ update_id: upd++, message: { message_id: upd + 5
     tgCalls.length = 0; await cbq(6002, 'tsr:' + sq.id); const pr8 = tgCalls.find(c => c.body.reply_markup && c.body.reply_markup.force_reply); ok(pr8, 'self reply prompt');
     tgCalls.length = 0; await hook(msg(6002, { text: 'الإجابة سهلة', reply_to_message: { message_id: msgId - 0 } })); await sleep(120);
     ok(tgCalls.some(c => String(c.body.chat_id) === '6001' && /رد جاهز للطالب/.test(c.body.text || '') && /الإجابة سهلة/.test(c.body.text || '')), 'self reply reached CS');
+    // ===== v1.8.1: a question in several messages =====
+    tgCalls.length = 0;
+    await Promise.all([hook(msg(6001, { voice: { file_id: 'PV1' } })), hook(msg(6001, { text: 'وكمان ليه الضغط بيعلى؟' }))]); await sleep(150);
+    ok(tgCalls.filter(c => /ده سؤال لدكتور ولا مشكلة/.test(c.body.text || '')).length === 1 && tgCalls.some(c => /اتضافت للسؤال ✓ \(2 رسايل\)/.test(c.body.text || '')), 'burst merged into one question');
+    let k9 = tgCalls.find(c => /ده سؤال لدكتور ولا مشكلة/.test(c.body.text || ''));
+    tgCalls.length = 0; await cbq(6001, k9.body.reply_markup.inline_keyboard[0][0].callback_data);
+    k9 = lastKb(); await cbq(6001, k9.body.reply_markup.inline_keyboard.flat().find(x => x.text.startsWith('1-1')).callback_data);
+    k9 = lastKb(); await cbq(6001, k9.body.reply_markup.inline_keyboard.flat().find(x => x.callback_data.endsWith(':' + L1.id)).callback_data);
+    await hook(msg(6001, { text: 'صورة كمان' })); await sleep(60); // arrives mid-flow → joins too
+    k9 = tgCalls.filter(c => /يروح لمين/.test(c.body.text || '')).at(-1); await cbq(6001, k9.body.reply_markup.inline_keyboard[0][0].callback_data);
+    await cbq(6001, lastKb().body.reply_markup.inline_keyboard[0][0].callback_data); // skip student
+    await cbq(6001, lastKb().body.reply_markup.inline_keyboard[1][0].callback_data); // priority عادي
+    const nodl = lastKb().body.reply_markup.inline_keyboard[2][0].callback_data; tgCalls.length = 0; await cbq(6001, nodl); await sleep(120); // no deadline
+    const mt = (await walaa.req('GET', '/api/tickets')).filter(x => x.batch_id === b11.id).sort((a, b) => b.id - a.id)[0];
+    ok(mt.parts_count === 2 && mt.att_kind === 'voice', 'ticket has main voice + 2 parts');
+    ok(tgCalls.filter(c => String(c.body.chat_id) === '5551' && /تكملة السؤال/.test(c.body.text || '')).length === 2, 'doctor got the parts');
+    const conf = tgCalls.find(c => String(c.body.chat_id) === '6001' && /Reply على الرسالة دي/.test(c.body.text || ''));
+    ok(conf, 'confirmation tells how to add more');
+    // CS adds more later by replying on the confirmation
+    const confId = DB.one('SELECT cs_msg_id FROM tickets WHERE id=?', mt.id).cs_msg_id; ok(confId, 'confirmation id saved');
+    tgCalls.length = 0; await hook(msg(6001, { text: 'الطالب بيقول كمان كذا', reply_to_message: { message_id: confId } })); await sleep(120);
+    ok(tgCalls.some(c => String(c.body.chat_id) === '5551' && /إضافة على السؤال/.test(c.body.text || '')) && tgCalls.some(c => String(c.body.chat_id) === '6001' && /اتضافت على السؤال/.test(c.body.text || '')), 'late addition reaches doctor');
+    // doctor replies on a part message
+    const partMsg = DB.one('SELECT tg_msg_id FROM ticket_parts WHERE ticket_id=? ORDER BY id DESC', mt.id).tg_msg_id;
+    tgCalls.length = 0; await hook(msg(5551, { text: 'الرد على كله', reply_to_message: { message_id: partMsg } })); await sleep(120);
+    ok((await walaa.req('GET', '/api/tickets')).find(x => x.id === mt.id).reply === 'الرد على كله', 'reply on a part counts');
+    tgCalls.length = 0; await hook(msg(6001, { text: 'حاجة بعد الرد', reply_to_message: { message_id: confId } })); await sleep(80);
+    ok(tgCalls.some(c => /اترد عليه خلاص/.test(c.body.text || '')), 'no additions after reply');
+    // dashboard: add a part + doctor sees parts
+    const dq9 = await cs.req('POST', '/api/tickets', { kind: 'question', batch_id: b11.id, lecture_id: L1.id, body: 'سؤال من اللوحة' });
+    const pfd = new FormData(); pfd.append('body', 'تكملة من اللوحة'); await cs.req('POST', `/api/tickets/${dq9.id}/parts`, pfd);
+    ok((await cs.req('GET', `/api/tickets/${dq9.id}/parts`)).length === 1 && (await doc.req('GET', '/api/my-questions')).find(x => x.id === dq9.id).parts[0].body === 'تكملة من اللوحة', 'dashboard part visible to doctor');
     // undo settlement
     const st1 = (await admin.req('GET', '/api/finance/' + d.id)).settlements[0];
     await admin.req('DELETE', '/api/settlements/' + st1.id);

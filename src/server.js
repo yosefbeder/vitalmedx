@@ -11,7 +11,7 @@ const PDF = require('./pdf');
 const { DATA_DIR } = require('./db');
 const ATT = path.join(DATA_DIR, 'attachments'); fs.mkdirSync(ATT, { recursive: true });
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, '..', 'public');
 const WEBHOOK = process.env.WEBHOOK_SECRET || '';
@@ -311,7 +311,7 @@ route('GET', '/api/tickets', async ({ u, q }) => {
   const lim = Number(setting('coord_reply_minutes')) * 60e3, cl = Number(setting('cs_reply_minutes')) * 60e3, n = Date.now();
   const g = L.supGrace(), nm = Object.fromEntries(all('SELECT id, name, role FROM users').map(x => [x.id, x]));
   ts.sort((a, b) => (!!a.closed_at - !!b.closed_at) || (a.closed_at ? b.created_at - a.created_at : (b.priority - a.priority) || ((a.due_at || 9e15) - (b.due_at || 9e15)) || b.created_at - a.created_at));
-  return ts.map(({ att_path, reply_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), has_reply_file: !!(reply_path || t.reply_file_id), holder: L.ticketHolder(t), due_late: !!(t.due_at && !t.closed_at && n > t.due_at),
+  return ts.map(({ att_path, reply_path, ...t }) => ({ ...t, has_att: !!(att_path || t.att_file_id), has_reply_file: !!(reply_path || t.reply_file_id), parts_count: (one('SELECT COUNT(*) n FROM ticket_parts WHERE ticket_id=?', t.id) || {}).n || 0, holder: L.ticketHolder(t), due_late: !!(t.due_at && !t.closed_at && n > t.due_at),
     by: { sent: nm[t.sent_by], returned: nm[t.returned_by], closed: nm[t.closed_by] }, both_late: L.returnLate(t, g), stage: t.closed_at ? 'closed' : t.kind === 'problem' ? 'problem' : t.returned_at ? 'deliver' : !t.sent_doctor_at ? 'new' : !t.reply_at ? 'doctor' : !t.returned_at ? 'return' : 'deliver',
     coord_late: !!(t.reply_at && (t.returned_at || n) - t.reply_at > lim), cs_late: !!(t.returned_at && (t.delivered_at || n) - t.returned_at > cl) }));
 });
@@ -406,10 +406,24 @@ route('GET', '/api/messages/:id/file', async ({ u, p, res }) => {
   const url = await bot.getFileUrl(m.file_id); if (!url) fail(404, 'الملف مش متاح');
   const r = await fetch(url); res.writeHead(200, { 'content-type': { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4' }[m.file_kind] || r.headers.get('content-type') || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); res.end(Buffer.from(await r.arrayBuffer()));
 });
+const partsOf = id => all('SELECT id, body, file_kind, mime, name, created_at, (file_id IS NOT NULL OR path IS NOT NULL) has_file FROM ticket_parts WHERE ticket_id=? ORDER BY id', id);
+route('GET', '/api/tickets/:id/parts', async ({ u, p }) => { const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة'); if (!canTicket(u, t)) fail(403, 'مش مسموح'); return partsOf(t.id); });
+route('POST', '/api/tickets/:id/parts', async ({ u, p, body, files }) => {
+  const t = one('SELECT * FROM tickets WHERE id=?', int(p.id)) || fail(404, 'مش موجودة'); if (!canBatch(u, t.batch_id) || u.role === 'doctor') fail(403, 'مش مسموح');
+  const f = files.file; let fp = null; if (f) { fp = path.join(ATT, `p${t.id}-${Date.now()}-${f.name.replace(/[^\w.\-]+/g, '_').slice(-50)}`); fs.writeFileSync(fp, f.buf); }
+  if (!str(body.body) && !f) fail(400, 'اكتب الإضافة أو ارفع ملف');
+  const r = await bot.addPart(t, u, { body: str(body.body, 4000), path: fp, mime: f ? f.mime : null, name: f ? f.name : null }); if (!r.ok) fail(400, r.msg); return r;
+});
+route('GET', '/api/ticket-parts/:id/file', async ({ u, p, res }) => {
+  const x = one('SELECT * FROM ticket_parts WHERE id=?', int(p.id)) || fail(404, 'مش موجود'), t = one('SELECT * FROM tickets WHERE id=?', x.ticket_id); if (!t || !canTicket(u, t)) fail(403, 'مش مسموح');
+  if (x.path && fs.existsSync(x.path)) { res.writeHead(200, { 'content-type': x.mime || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); return res.end(fs.readFileSync(x.path)); }
+  if (!x.file_id) fail(404, 'مفيش ملف'); const url = await bot.getFileUrl(x.file_id); if (!url) fail(404, 'الملف مش متاح');
+  const r = await fetch(url); res.writeHead(200, { 'content-type': { voice: 'audio/ogg', audio: 'audio/mpeg', photo: 'image/jpeg', video: 'video/mp4' }[x.file_kind] || r.headers.get('content-type') || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); res.end(Buffer.from(await r.arrayBuffer()));
+});
 route('GET', '/api/my-questions', async ({ u }) => {
   need(u, 'doctor');
   return all("SELECT t.id, t.kind, t.body, t.priority, t.due_at, t.sent_doctor_at, t.reply, t.reply_at, t.reply_kind, t.att_kind, t.att_mime, t.closed_at, (t.att_path IS NOT NULL OR t.att_file_id IS NOT NULL) has_att, (t.reply_path IS NOT NULL OR t.reply_file_id IS NOT NULL) has_reply_file, l.name lecture FROM tickets t LEFT JOIN lectures l ON l.id=t.lecture_id WHERE t.doctor_id=? AND t.sent_doctor_at IS NOT NULL ORDER BY t.reply_at IS NOT NULL, t.priority DESC, t.sent_doctor_at DESC LIMIT 200", u.id)
-    .map(t => ({ ...t, urgent: t.priority >= 2, priority: undefined }));
+    .map(t => ({ ...t, urgent: t.priority >= 2, priority: undefined, parts: partsOf(t.id) }));
 });
 route('POST', '/api/my-questions/:id/reply', async ({ u, p, body, files }) => {
   need(u, 'doctor'); const t = one('SELECT * FROM tickets WHERE id=? AND doctor_id=? AND sent_doctor_at IS NOT NULL', int(p.id), u.id) || fail(404, 'مش موجود');

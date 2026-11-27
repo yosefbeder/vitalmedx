@@ -91,6 +91,10 @@ if (!db.prepare("SELECT 1 FROM settings WHERE key='single_cs_v18'").get()) { // 
   db.prepare("UPDATE users SET active=0 WHERE role='cs' AND email='cs2@vitalmedx.app'").run();
   db.prepare("INSERT INTO settings(key,value) VALUES('single_cs_v18','1')").run();
 }
+// v1.8.1: a question in several messages
+db.exec('CREATE TABLE IF NOT EXISTS ticket_parts(id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL, body TEXT, file_id TEXT, file_kind TEXT, path TEXT, mime TEXT, name TEXT, by INTEGER, tg_msg_id INTEGER, created_at INTEGER NOT NULL)');
+db.exec('CREATE INDEX IF NOT EXISTS tp_ticket ON ticket_parts(ticket_id)');
+addCol('bot_drafts', 'extra', 'TEXT'); addCol('tickets', 'cs_msg_id', 'INTEGER');
 db.exec('CREATE TABLE IF NOT EXISTS reset_codes(user_id INTEGER PRIMARY KEY, code TEXT NOT NULL, exp INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL)');
 if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='alert_log'").get()) {
   db.exec('CREATE TABLE alert_log(key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
